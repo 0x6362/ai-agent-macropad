@@ -1,0 +1,152 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1460" viewBox="0 0 1600 1460" role="img" aria-labelledby="title desc">
+<title id="title">Keychron K0 Max keymap and LED guide</title>
+<desc id="desc">M1 Claude, M2 Codex, M3 agent-shell, M4 next page, M5 Fn. Digits 1 through 9 and 0 focus sessions. Circle focuses Emacs; triangle Ghostty; square allows once and X denies the selected agent-shell permission. Unassigned digits are dark. USB-C and 2.4 GHz receiver are supported.</desc>
+<g font-family="Arial, Helvetica, sans-serif">
+<rect x="0" y="0" width="1600" height="1460" rx="0" fill="#0b1120" stroke="none" stroke-width="1"/>
+<text x="64" y="100" font-size="54" fill="#e9eef8" font-weight="750" text-anchor="start">Keychron K0 Max</text>
+<text x="66" y="145" font-size="28" fill="#aab9d2" font-weight="400" text-anchor="start">Agent sessions at a glance</text>
+<rect x="1086" y="61" width="450" height="62" rx="31" fill="#12372f" stroke="#286c59" stroke-width="1"/>
+<circle cx="1117" cy="92" r="6" fill="#6ce6b4" stroke="#6ce6b4" stroke-width="2"/>
+<text x="1140" y="101" font-size="25" fill="#b8f7dc" font-weight="650" text-anchor="start">2.4 GHz wireless + USB-C</text>
+<text x="66" y="179" font-size="17" fill="#7f97bc" font-weight="650" text-anchor="start">NO RAINBOW  /  UNASSIGNED KEYS STAY DARK</text>
+<rect x="56" y="214" width="820" height="936" rx="24" fill="#111a2b" stroke="#28354b" stroke-width="1"/>
+<rect x="908" y="214" width="636" height="936" rx="24" fill="#111a2b" stroke="#28354b" stroke-width="1"/>
+<text x="92" y="263" font-size="22" fill="#aab9d2" font-weight="700" text-anchor="start">KEYMAP</text>
+<text x="940" y="263" font-size="22" fill="#aab9d2" font-weight="700" text-anchor="start">SESSION LED STATES</text>
+<circle cx="158" cy="358" r="42" fill="#202b40" stroke="#65738c" stroke-width="3"/>
+<path d="M158 324 L158 338" stroke="#d6dfef" stroke-width="3" stroke-linecap="round"/>
+<text x="158" y="415" font-size="18" fill="#bac6d9" font-weight="500" text-anchor="middle">Volume / mute</text>
+<rect x="240" y="308" width="132" height="112" rx="14" fill="#192237" stroke="#3c4960" stroke-width="2"/>
+<circle cx="306" cy="347" r="18" fill="none" stroke="#d6dfef" stroke-width="3"/>
+<text x="306" y="397" font-size="21" fill="#d6dfef" font-weight="500" text-anchor="middle">Emacs</text>
+<rect x="388" y="308" width="132" height="112" rx="14" fill="#192237" stroke="#3c4960" stroke-width="2"/>
+<path d="M454 327 L475 363 L433 363 Z" fill="none" stroke="#d6dfef" stroke-width="3" stroke-linejoin="round"/>
+<text x="454" y="397" font-size="21" fill="#d6dfef" font-weight="500" text-anchor="middle">Ghostty</text>
+<rect x="536" y="308" width="132" height="112" rx="14" fill="#192237" stroke="#3c4960" stroke-width="2"/>
+<rect x="585" y="330" width="34" height="34" rx="2" fill="none" stroke="#d6dfef" stroke-width="3"/>
+<text x="602" y="397" font-size="21" fill="#d6dfef" font-weight="500" text-anchor="middle">Allow once</text>
+<rect x="684" y="308" width="132" height="112" rx="14" fill="#192237" stroke="#3c4960" stroke-width="2"/>
+<path d="M734 331 L766 363 M766 331 L734 363" stroke="#d6dfef" stroke-width="3" stroke-linecap="round"/>
+<text x="750" y="397" font-size="21" fill="#d6dfef" font-weight="500" text-anchor="middle">Deny</text>
+<rect x="92" y="438" width="132" height="112" rx="14" fill="#172039" stroke="#dce5f5" stroke-width="2"/>
+<rect x="106" y="538" width="104" height="4" rx="2" fill="#dce5f5" stroke="none" stroke-width="1"/>
+<text x="158.0" y="487" font-size="32" fill="#e9eef8" font-weight="650" text-anchor="middle">M1</text>
+<text x="158.0" y="518" font-size="19" fill="#bac6d9" font-weight="500" text-anchor="middle">Claude Code</text>
+<rect x="240" y="438" width="132" height="112" rx="14" fill="#192237" stroke="#3c4960" stroke-width="2"/>
+<text x="306.0" y="487" font-size="32" fill="#e9eef8" font-weight="650" text-anchor="middle">Num</text>
+<text x="306.0" y="518" font-size="19" fill="#bac6d9" font-weight="500" text-anchor="middle">Clear</text>
+<rect x="388" y="438" width="132" height="112" rx="14" fill="#192237" stroke="#3c4960" stroke-width="2"/>
+<text x="454.0" y="507.0" font-size="42" fill="#e9eef8" font-weight="650" text-anchor="middle">/</text>
+<rect x="536" y="438" width="132" height="112" rx="14" fill="#192237" stroke="#3c4960" stroke-width="2"/>
+<text x="602.0" y="507.0" font-size="42" fill="#e9eef8" font-weight="650" text-anchor="middle">*</text>
+<rect x="684" y="438" width="132" height="112" rx="14" fill="#192237" stroke="#3c4960" stroke-width="2"/>
+<text x="750.0" y="507.0" font-size="42" fill="#e9eef8" font-weight="650" text-anchor="middle">−</text>
+<rect x="92" y="568" width="132" height="112" rx="14" fill="#172039" stroke="#ff7f00" stroke-width="2"/>
+<rect x="106" y="668" width="104" height="4" rx="2" fill="#ff7f00" stroke="none" stroke-width="1"/>
+<rect x="87" y="563" width="142" height="122" rx="19" fill="none" stroke="#ff7f00" stroke-width="2" stroke-dasharray="5 6"/>
+<text x="158.0" y="617" font-size="32" fill="#e9eef8" font-weight="650" text-anchor="middle">M2</text>
+<text x="158.0" y="648" font-size="19" fill="#bac6d9" font-weight="500" text-anchor="middle">Codex CLI</text>
+<rect x="240" y="568" width="132" height="112" rx="14" fill="#172039" stroke="#ff0000" stroke-width="2"/>
+<rect x="254" y="668" width="104" height="4" rx="2" fill="#ff0000" stroke="none" stroke-width="1"/>
+<text x="306.0" y="637.0" font-size="42" fill="#e9eef8" font-weight="650" text-anchor="middle">7</text>
+<rect x="388" y="568" width="132" height="112" rx="14" fill="#172039" stroke="#8000ff" stroke-width="2"/>
+<rect x="402" y="668" width="104" height="4" rx="2" fill="#8000ff" stroke="none" stroke-width="1"/>
+<rect x="383" y="563" width="142" height="122" rx="19" fill="none" stroke="#8000ff" stroke-width="2" stroke-dasharray="5 6"/>
+<text x="454.0" y="637.0" font-size="42" fill="#e9eef8" font-weight="650" text-anchor="middle">8</text>
+<rect x="536" y="568" width="132" height="112" rx="14" fill="#192237" stroke="#3c4960" stroke-width="2"/>
+<text x="602.0" y="637.0" font-size="42" fill="#e9eef8" font-weight="650" text-anchor="middle">9</text>
+<rect x="684" y="568" width="132" height="242" rx="14" fill="#192237" stroke="#3c4960" stroke-width="2"/>
+<text x="750.0" y="702.0" font-size="42" fill="#e9eef8" font-weight="650" text-anchor="middle">+</text>
+<rect x="92" y="698" width="132" height="112" rx="14" fill="#172039" stroke="#ffaa00" stroke-width="2"/>
+<rect x="106" y="798" width="104" height="4" rx="2" fill="#ffaa00" stroke="none" stroke-width="1"/>
+<text x="158.0" y="747" font-size="32" fill="#e9eef8" font-weight="650" text-anchor="middle">M3</text>
+<text x="158.0" y="778" font-size="19" fill="#bac6d9" font-weight="500" text-anchor="middle">agent-shell</text>
+<rect x="240" y="698" width="132" height="112" rx="14" fill="#172039" stroke="#00ff00" stroke-width="2"/>
+<rect x="254" y="798" width="104" height="4" rx="2" fill="#00ff00" stroke="none" stroke-width="1"/>
+<text x="306.0" y="767.0" font-size="42" fill="#e9eef8" font-weight="650" text-anchor="middle">4</text>
+<rect x="388" y="698" width="132" height="112" rx="14" fill="#172039" stroke="#ffaa00" stroke-width="2"/>
+<rect x="402" y="798" width="104" height="4" rx="2" fill="#ffaa00" stroke="none" stroke-width="1"/>
+<text x="454.0" y="767.0" font-size="42" fill="#e9eef8" font-weight="650" text-anchor="middle">5</text>
+<rect x="536" y="698" width="132" height="112" rx="14" fill="#172039" stroke="#626875" stroke-width="2"/>
+<rect x="550" y="798" width="104" height="4" rx="2" fill="#626875" stroke="none" stroke-width="1"/>
+<text x="602.0" y="767.0" font-size="42" fill="#e9eef8" font-weight="650" text-anchor="middle">6</text>
+<rect x="92" y="828" width="132" height="112" rx="14" fill="#172039" stroke="#47bed9" stroke-width="2"/>
+<rect x="106" y="928" width="104" height="4" rx="2" fill="#47bed9" stroke="none" stroke-width="1"/>
+<text x="158.0" y="877" font-size="32" fill="#e9eef8" font-weight="650" text-anchor="middle">M4</text>
+<text x="158.0" y="908" font-size="19" fill="#bac6d9" font-weight="500" text-anchor="middle">Next page</text>
+<rect x="240" y="828" width="132" height="112" rx="14" fill="#172039" stroke="#0000ff" stroke-width="2"/>
+<rect x="254" y="928" width="104" height="4" rx="2" fill="#0000ff" stroke="none" stroke-width="1"/>
+<text x="306.0" y="897.0" font-size="42" fill="#e9eef8" font-weight="650" text-anchor="middle">1</text>
+<rect x="388" y="828" width="132" height="112" rx="14" fill="#172039" stroke="#8000ff" stroke-width="2"/>
+<rect x="402" y="928" width="104" height="4" rx="2" fill="#8000ff" stroke="none" stroke-width="1"/>
+<text x="454.0" y="897.0" font-size="42" fill="#e9eef8" font-weight="650" text-anchor="middle">2</text>
+<rect x="536" y="828" width="132" height="112" rx="14" fill="#172039" stroke="#ff7f00" stroke-width="2"/>
+<rect x="550" y="928" width="104" height="4" rx="2" fill="#ff7f00" stroke="none" stroke-width="1"/>
+<rect x="531" y="823" width="142" height="122" rx="19" fill="none" stroke="#ff7f00" stroke-width="2" stroke-dasharray="5 6"/>
+<text x="602.0" y="897.0" font-size="42" fill="#e9eef8" font-weight="650" text-anchor="middle">3</text>
+<rect x="684" y="828" width="132" height="242" rx="14" fill="#192237" stroke="#3c4960" stroke-width="2"/>
+<text x="750.0" y="962.0" font-size="42" fill="#e9eef8" font-weight="650" text-anchor="middle">Enter</text>
+<rect x="92" y="958" width="132" height="112" rx="14" fill="#192237" stroke="#3c4960" stroke-width="2"/>
+<text x="158.0" y="1007" font-size="32" fill="#e9eef8" font-weight="650" text-anchor="middle">M5</text>
+<text x="158.0" y="1038" font-size="19" fill="#bac6d9" font-weight="500" text-anchor="middle">Fn</text>
+<rect x="240" y="958" width="280" height="112" rx="14" fill="#192237" stroke="#3c4960" stroke-width="2"/>
+<text x="380.0" y="1027.0" font-size="42" fill="#e9eef8" font-weight="650" text-anchor="middle">0</text>
+<rect x="536" y="958" width="132" height="112" rx="14" fill="#192237" stroke="#3c4960" stroke-width="2"/>
+<text x="602.0" y="1027.0" font-size="42" fill="#e9eef8" font-weight="650" text-anchor="middle">.</text>
+<text x="92" y="1106" font-size="21" fill="#bac6d9" font-weight="400" text-anchor="start">Tap a digit: select &amp; focus   ·   Hold 5s: clear its assignment</text>
+<circle cx="969" cy="323" r="13" fill="#282828" stroke="#282828" stroke-width="2"/>
+<text x="1006" y="326" font-size="25" fill="#e9eef8" font-weight="650" text-anchor="start">Idle · assigned</text>
+<text x="1006" y="353" font-size="19" fill="#aab9d2" font-weight="400" text-anchor="start">Dim grey; registered, no activity yet</text>
+<circle cx="969" cy="397" r="13" fill="#0000ff" stroke="#0000ff" stroke-width="2"/>
+<text x="1006" y="400" font-size="25" fill="#e9eef8" font-weight="650" text-anchor="start">Working</text>
+<text x="1006" y="427" font-size="19" fill="#aab9d2" font-weight="400" text-anchor="start">Blue; reasoning between tool calls</text>
+<circle cx="969" cy="471" r="13" fill="#8000ff" stroke="#8000ff" stroke-width="2"/>
+<text x="1006" y="474" font-size="25" fill="#e9eef8" font-weight="650" text-anchor="start">Tool running</text>
+<text x="1006" y="501" font-size="19" fill="#aab9d2" font-weight="400" text-anchor="start">Purple; a tool is executing</text>
+<circle cx="969" cy="545" r="13" fill="#ff7f00" stroke="#ff7f00" stroke-width="2"/>
+<circle cx="969" cy="545" r="20" fill="none" stroke="#ff7f00" stroke-width="2" stroke-dasharray="4 5"/>
+<text x="1006" y="548" font-size="25" fill="#e9eef8" font-weight="650" text-anchor="start">Needs input</text>
+<text x="1006" y="575" font-size="19" fill="#aab9d2" font-weight="400" text-anchor="start">Orange; waiting for your decision</text>
+<rect x="1438" y="525" width="73" height="28" rx="8" fill="#302239" stroke="#6a4c74" stroke-width="1"/>
+<text x="1474" y="545" font-size="14" fill="#edd0f6" font-weight="650" text-anchor="middle">BLINK</text>
+<circle cx="969" cy="619" r="13" fill="#00ff00" stroke="#00ff00" stroke-width="2"/>
+<text x="1006" y="622" font-size="25" fill="#e9eef8" font-weight="650" text-anchor="start">Complete</text>
+<text x="1006" y="649" font-size="19" fill="#aab9d2" font-weight="400" text-anchor="start">Green; the turn finished</text>
+<circle cx="969" cy="693" r="13" fill="#ffaa00" stroke="#ffaa00" stroke-width="2"/>
+<text x="1006" y="696" font-size="25" fill="#e9eef8" font-weight="650" text-anchor="start">Waiting</text>
+<text x="1006" y="723" font-size="19" fill="#aab9d2" font-weight="400" text-anchor="start">Amber; idle notification received</text>
+<circle cx="969" cy="767" r="13" fill="#ff0000" stroke="#ff0000" stroke-width="2"/>
+<text x="1006" y="770" font-size="25" fill="#e9eef8" font-weight="650" text-anchor="start">Error</text>
+<text x="1006" y="797" font-size="19" fill="#aab9d2" font-weight="400" text-anchor="start">Red; a failure was reported</text>
+<circle cx="969" cy="841" r="13" fill="#8000ff" stroke="#8000ff" stroke-width="2"/>
+<circle cx="969" cy="841" r="20" fill="none" stroke="#8000ff" stroke-width="2" stroke-dasharray="4 5"/>
+<text x="1006" y="844" font-size="25" fill="#e9eef8" font-weight="650" text-anchor="start">Tool stalled</text>
+<text x="1006" y="871" font-size="19" fill="#aab9d2" font-weight="400" text-anchor="start">Purple; tool running beyond the threshold</text>
+<rect x="1438" y="821" width="73" height="28" rx="8" fill="#302239" stroke="#6a4c74" stroke-width="1"/>
+<text x="1474" y="841" font-size="14" fill="#edd0f6" font-weight="650" text-anchor="middle">BLINK</text>
+<circle cx="969" cy="915" r="13" fill="#0d1421" stroke="#708096" stroke-width="2"/>
+<text x="1006" y="918" font-size="25" fill="#e9eef8" font-weight="650" text-anchor="start">Unassigned</text>
+<text x="1006" y="945" font-size="19" fill="#aab9d2" font-weight="400" text-anchor="start">Dark; no session bound on this page</text>
+<circle cx="969" cy="989" r="13" fill="#ff00ff" stroke="#ff00ff" stroke-width="2"/>
+<text x="1006" y="992" font-size="25" fill="#e9eef8" font-weight="650" text-anchor="start">Unknown state</text>
+<text x="1006" y="1019" font-size="19" fill="#aab9d2" font-weight="400" text-anchor="start">Magenta; host / firmware state mismatch</text>
+<text x="942" y="1097" font-size="20" fill="#bac6d9" font-weight="400" text-anchor="start">Dashed ring = 0.5s on / 0.5s off.</text>
+<rect x="56" y="1178" width="1488" height="218" rx="24" fill="#111a2b" stroke="#28354b" stroke-width="1"/>
+<text x="88" y="1224" font-size="23" fill="#aab9d2" font-weight="700" text-anchor="start">BANK INDICATORS</text>
+<text x="383" y="1224" font-size="23" fill="#e9eef8" font-weight="500" text-anchor="start">M1–M3 summarize all pages in their bank.</text>
+<circle cx="101" cy="1270" r="10" fill="#dce5f5" stroke="#dce5f5" stroke-width="2"/>
+<text x="128" y="1277" font-size="23" fill="#e9eef8" font-weight="650" text-anchor="start">Selected bank</text>
+<text x="128" y="1307" font-size="17" fill="#aab9d2" font-weight="400" text-anchor="start">White, without an attention state</text>
+<circle cx="498" cy="1270" r="10" fill="#ffaa00" stroke="#ffaa00" stroke-width="2"/>
+<text x="525" y="1277" font-size="23" fill="#e9eef8" font-weight="650" text-anchor="start">Idle waiting</text>
+<text x="525" y="1307" font-size="17" fill="#aab9d2" font-weight="400" text-anchor="start">Steady amber</text>
+<circle cx="815" cy="1270" r="10" fill="#ff7f00" stroke="#ff7f00" stroke-width="2"/>
+<circle cx="815" cy="1270" r="17" fill="none" stroke="#ff7f00" stroke-width="2" stroke-dasharray="4 5"/>
+<text x="842" y="1277" font-size="23" fill="#e9eef8" font-weight="650" text-anchor="start">Needs attention</text>
+<text x="842" y="1307" font-size="17" fill="#aab9d2" font-weight="400" text-anchor="start">Blinking orange: input or stalled</text>
+<circle cx="1238" cy="1270" r="10" fill="#47bed9" stroke="#47bed9" stroke-width="2"/>
+<text x="1265" y="1277" font-size="23" fill="#e9eef8" font-weight="650" text-anchor="start">More pages</text>
+<text x="1265" y="1307" font-size="17" fill="#aab9d2" font-weight="400" text-anchor="start">M4 glows cyan</text>
+<text x="88" y="1365" font-size="21" fill="#bac6d9" font-weight="400" text-anchor="start">Square / X: selected agent-shell request only. Switching bank/page clears selection. Never “allow always”.</text>
+<text x="64" y="1435" font-size="20" fill="#8598b7" font-weight="400" text-anchor="start">Colors on the illustrated keys are examples, not fixed assignments. Every bank/page reuses the same ten digits.</text>
+</g></svg>

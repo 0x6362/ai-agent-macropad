@@ -24,6 +24,9 @@
 // because MAX_SLOTS is far below it.
 #define AI_AGENT_NO_SLOT 0xFF
 
+// Optional board capabilities advertised in the hello report.
+uint8_t ai_agent_macropad_capabilities(void);
+
 // How long a slot key must stay held (ms) before MSG_KEY_HELD fires —
 // see ai_agent_macropad_task(). Deliberately generous: this manually
 // evicts whatever session is mapped to the slot, so it needs to be
@@ -53,7 +56,15 @@ enum ai_agent_macropad_msg {
     MSG_PING     = 0x21,
     MSG_KEY      = 0x22,
     MSG_KEY_HELD = 0x23,
+    MSG_SELECT_BANK = 0x24,
+    MSG_NEXT_PAGE = 0x25,
+    MSG_BANK_STATE = 0x26,
+    MSG_FOCUS_APP = 0x27,
+    MSG_PERMISSION_DECISION = 0x28,
 };
+
+#define AI_AGENT_MACROPAD_CAP_SESSION_BANKS 0x01
+#define AI_AGENT_MACROPAD_CAP_PERMISSION_TOKEN 0x02
 
 // Sent on MSG_PING (byte 1) and MSG_HELLO (byte 3). Must match
 // hid_protocol.py's PROTOCOL_VERSION.

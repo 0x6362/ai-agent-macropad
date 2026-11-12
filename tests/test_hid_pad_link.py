@@ -1,6 +1,8 @@
 import time
 import types
 
+import pytest
+
 import hid_protocol
 import pad_link
 
@@ -93,6 +95,28 @@ def test_discover_hid_device_returns_none_with_no_candidates(monkeypatch):
     fake = make_fake_hid([])
     monkeypatch.setattr(pad_link, "hid", fake)
     assert pad_link.discover_hid_device(hid_protocol.NUPHY_AIR75_V2.vid, hid_protocol.NUPHY_AIR75_V2.pid) is None
+
+
+def test_discovery_retries_ping_when_receiver_drops_wakeup_packet(monkeypatch):
+    class SleepingDevice:
+        writes = 0
+
+        def write(self, packet):
+            self.writes += 1
+
+        def read(self, size, timeout=None):
+            time.sleep(.001)
+            return hello_report() if self.writes >= 2 else b""
+
+        def close(self):
+            pass
+
+    device = SleepingDevice()
+    monkeypatch.setattr(pad_link, "hid", types.SimpleNamespace(
+        enumerate=lambda vid, pid: [make_candidate(b"receiver")],
+        Device=lambda **kwargs: device, HIDException=FakeHidException))
+    assert pad_link.discover_hid_device(0x3434, 0xD030, handshake_timeout=.05) == b"receiver"
+    assert device.writes == 2
 
 
 def test_discover_hid_device_ignores_wrong_usage_page(monkeypatch):
@@ -251,3 +275,23 @@ def test_hidpadlink_write_json_headless_is_a_noop(monkeypatch):
     link = pad_link.HidPadLink(lambda msg: None)
     link.open()
     link.write_json({"t": "slot", "i": 0, "state": "idle"})  # must not raise
+
+
+@pytest.mark.parametrize("pad,expected_times", [
+    (hid_protocol.KEYCHRON_K0_MAX_WIRELESS, [0, .025, .05]),
+    (hid_protocol.KEYCHRON_K0_MAX, [0, 0, 0]),
+])
+def test_wireless_slot_clear_and_ping_share_paced_transport(monkeypatch, pad, expected_times):
+    clock = [0.0]
+    writes = []
+    monkeypatch.setattr(pad_link.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(pad_link.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
+    link = pad_link.HidPadLink(lambda msg: None, vid=pad.vid, pid=pad.pid)
+    link._dev = types.SimpleNamespace(write=lambda report: writes.append((clock[0], report)))
+    link.write_json({"t": "clear", "i": 5})
+    link._send_ping()
+    link.write_json({"t": "slot", "i": 0, "state": "working"})
+    assert [when for when, _ in writes] == expected_times
+    assert writes[0][1][1:4] == bytes([hid_protocol.MSG_SLOT, 5, hid_protocol.STATE_OFF])
+    assert writes[1][1][1] == hid_protocol.MSG_PING
+    assert writes[2][1][1:4] == bytes([hid_protocol.MSG_SLOT, 0, hid_protocol.STATE_WORKING])

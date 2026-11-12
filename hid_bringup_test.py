@@ -59,8 +59,7 @@ def do_handshake(dev):
 
 
 def cycle_states(dev, num_slots):
-    print(f"\nCycling all {num_slots} slots through every state — watch PageUp/PageDn/Home/End "
-          "(slots 4+ only light up if you've assigned them to a key via VIA)...")
+    print(f"\nCycling all {num_slots} assigned session keys through every state...")
     for state_name in ("working", "waiting", "done", "error", "question", "idle"):
         print(f"  state={state_name}")
         for i in range(num_slots):
@@ -79,8 +78,8 @@ def listen_for_keys(dev):
     confirm its index. No daemon or session mapping involved yet.
     """
     print(
-        "\nListening for key presses — press PageUp, PageDn, Home, End, and "
-        "any VIA-assigned slot keys (Ctrl+C to stop)..."
+        "\nListening for session keys and bank/app/permission controls "
+        "(Ctrl+C to stop)..."
     )
     try:
         while True:
@@ -88,8 +87,8 @@ def listen_for_keys(dev):
             if not data:
                 continue
             msg = hid_protocol.parse_report(bytes(data))
-            if msg and msg.get("t") == "key":
-                print(f"  key i={msg['i']}")
+            if msg:
+                print(f"  {msg}")
     except KeyboardInterrupt:
         print("\nstopped")
 
@@ -140,9 +139,8 @@ def main():
 
         cycle_states(dev, num_slots)
         print(
-            "\nDone with RGB cycling. PASS if PageUp/PageDn/Home/End visibly "
-            "changed color together at each step above (plus any keys "
-            "you've VIA-assigned to slots 4+), and 'question' blinked rather "
+            "\nDone with RGB cycling. PASS if the assigned session keys visibly "
+            "changed color together at each step above, and 'question' blinked rather "
             "than staying solid."
         )
 

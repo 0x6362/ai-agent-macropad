@@ -48,6 +48,10 @@
 # needs to stay fast — nc's -w1 caps the connection attempt at 1s, and
 # the ps call above is skipped entirely except at SessionStart.
 
+if [ "$AI_AGENT_MACROPAD_SOURCE" = "agent-shell" ]; then
+  exit 0
+fi
+
 SOCKET="$HOME/.ai-agent-macropad/daemon.sock"
 
 input=$(cat)
@@ -63,8 +67,10 @@ fi
 
 printf '%s' "$input" | jq -c \
   --arg pane "$TMUX_PANE" \
+  --arg socket "${TMUX%%,*}" \
   --arg ctty "$ctty" \
   '.tmux_pane = $pane
+   | .tmux_socket = $socket
    | .agent = "codex"
    | (if $ctty != "" then .controlling_tty = $ctty else . end)' \
   | nc -U -w1 "$SOCKET" >/dev/null 2>&1

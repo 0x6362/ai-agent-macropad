@@ -256,6 +256,7 @@ bool ai_agent_macropad_raw_hid_receive(uint8_t *data, uint8_t length, uint8_t de
             // the keycode enum — see the index-space note up top.
             response[2] = dense_count;
             response[3] = AI_AGENT_MACROPAD_PROTOCOL_VERSION;
+            response[4] = ai_agent_macropad_capabilities();
             raw_hid_send(response, sizeof(response));
             return true;
         }
@@ -307,6 +308,10 @@ static void state_to_rgb(uint8_t state, uint8_t *r, uint8_t *g, uint8_t *b) {
 // BLINK_STATES/BLINK_PERIOD (500ms on/off) — derived from the
 // free-running frame timer rather than tracked state, since this runs
 // every RGB matrix tick already.
+__attribute__((weak)) uint8_t ai_agent_macropad_capabilities(void) {
+    return 0;
+}
+
 void ai_agent_macropad_paint_indicators(uint8_t num_slots) {
     (void)num_slots;
     bool blink_on = (timer_read32() / 500) % 2 == 0;

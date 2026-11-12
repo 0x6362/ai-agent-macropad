@@ -5,30 +5,12 @@
 // indices, VID/PID, and the stock keymap below are all read from
 // keyboards/keychron/k0_max/ — nothing here is guessed.
 //
-// Base layers are Keychron's own stock keymap
-// (keymaps/keychron/keymap.c), unmodified except:
-//   - the four top-row shape keys (stock Esc / Del / Tab / Bksp,
-//     circle / triangle / square / X in the printed manual) become
-//     AI_AGENT_KEY_0..3, and paint their state on their own LEDs
-//     (0–3), the way every other board in this repo does.
-//
-//     These keys' LEDs face up with nothing above them, so the color
-//     reads as a glow around the keycap rather than through it. An
-//     earlier version compensated by rewriting slots on LEDs 0–3 to
-//     paint the row below instead (Num Lock / * -, LEDs 5–8), which
-//     cost more than the brightness it bought. It put slot 0 on the
-//     Num Lock LED, fighting that indicator for the color. Worse, it
-//     broke the invariant the VIA remap tracking depends on:
-//     set_slot_led_for_keycode() finds the slot to release by matching
-//     slot_led[] against the real LED of the key being remapped, and
-//     after the rewrite no slot held 0–3 any more. Remapping a shape
-//     key away therefore never released its slot, which went on
-//     painting the row below with stale state while the key's new
-//     owner claimed the same LED. Painting the slot's own key keeps
-//     slot_led[] meaning what the rest of the userspace assumes.
-//   - M1..M4 stay stock macros; M5 stays MO(FN) for Bluetooth pairing
-//     and lighting (stock UG_TOGG / UG_NEXT / etc.).
-// Encoder click is mute; encoder rotate is volume.
+// Digits 1–9 and 0 select ten sessions on the visible source/page.
+// M1/M2/M3 select Claude, Codex, or Agent Shell; M4 advances the page.
+// The shape keys use F13/F14 for app focus and F15/F16 for one-shot
+// Agent Shell permission responses. M5 retains the stock FN layer.
+// Slot colors use each numbered key's LED; the other keys stay dark
+// except the source attention indicators and paging indicator.
 //
 // 2025q3 already defines a strong via_command_kb() in
 // keyboards/keychron/common/keychron_raw_hid.c, so this keymap
@@ -39,6 +21,7 @@
 #include QMK_KEYBOARD_H
 #include "keychron_common.h"
 #include "ai_agent_macropad.h"
+#include "raw_hid.h"
 
 enum layers {
     BASE,
@@ -51,11 +34,11 @@ enum layers {
 // changes. VIA's customKeycodes array in via.json must stay aligned
 // with that same QK_KB_0-based numbering.
 enum ai_agent_macropad_keycodes {
-    AI_AGENT_KEY_0 = NEW_SAFE_RANGE, // circle  (stock Esc)
-    AI_AGENT_KEY_1,                  // triangle (stock Del)
-    AI_AGENT_KEY_2,                  // square  (stock Tab)
-    AI_AGENT_KEY_3,                  // X       (stock Bksp)
-    AI_AGENT_KEY_4,                  // unwired by default — VIA-assignable
+    AI_AGENT_KEY_0 = NEW_SAFE_RANGE, // digit 1
+    AI_AGENT_KEY_1,                  // digit 2
+    AI_AGENT_KEY_2,                  // digit 3
+    AI_AGENT_KEY_3,                  // digit 4
+    AI_AGENT_KEY_4,                  // digit 5
     AI_AGENT_KEY_5,
     AI_AGENT_KEY_6,
     AI_AGENT_KEY_7,
@@ -63,6 +46,10 @@ enum ai_agent_macropad_keycodes {
     AI_AGENT_KEY_9,
     AI_AGENT_KEY_10,
     AI_AGENT_KEY_11,
+    AI_BANK_CLAUDE,
+    AI_BANK_CODEX,
+    AI_BANK_EMACS,
+    AI_NEXT_PAGE,
 };
 
 #define NUM_MACROPAD_SLOTS AI_AGENT_MACROPAD_MAX_SLOTS
@@ -71,12 +58,12 @@ enum ai_agent_macropad_keycodes {
 // clang-format off
 const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
     [BASE] = LAYOUT_tenkey_27(
-        KC_MUTE,        AI_AGENT_KEY_0, AI_AGENT_KEY_1, AI_AGENT_KEY_2, AI_AGENT_KEY_3,
-        MC_1,           KC_NUM,         KC_PSLS,        KC_PAST,        KC_PMNS,
-        MC_2,           KC_P7,          KC_P8,          KC_P9,          KC_PPLS,
-        MC_3,           KC_P4,          KC_P5,          KC_P6,
-        MC_4,           KC_P1,          KC_P2,          KC_P3,
-        MO(FN),         KC_P0,                          KC_PDOT,        KC_PENT ),
+        KC_MUTE,        KC_F13,         KC_F14,         KC_F15,         KC_F16,
+        AI_BANK_CLAUDE, KC_NUM,         KC_PSLS,        KC_PAST,        KC_PMNS,
+        AI_BANK_CODEX,  AI_AGENT_KEY_6, AI_AGENT_KEY_7, AI_AGENT_KEY_8,          KC_PPLS,
+        AI_BANK_EMACS,  AI_AGENT_KEY_3, AI_AGENT_KEY_4, AI_AGENT_KEY_5,
+        AI_NEXT_PAGE,   AI_AGENT_KEY_0, AI_AGENT_KEY_1, AI_AGENT_KEY_2,
+        MO(FN),         AI_AGENT_KEY_9,                          KC_PDOT,        KC_PENT ),
 
     [FN] = LAYOUT_tenkey_27(
         UG_TOGG, BT_HST1, BT_HST2, BT_HST3, P2P4G,
@@ -104,7 +91,37 @@ void keyboard_post_init_user(void) {
     ai_agent_macropad_scan_slots(AI_AGENT_KEY_0, NUM_MACROPAD_SLOTS);
 }
 
+static uint8_t selected_bank;
+static uint8_t bank_attention[3];
+static uint8_t bank_pages = 1;
+static uint32_t permission_token;
+
+uint8_t ai_agent_macropad_capabilities(void) {
+    return AI_AGENT_MACROPAD_CAP_SESSION_BANKS | AI_AGENT_MACROPAD_CAP_PERMISSION_TOKEN;
+}
+
 bool process_record_user(uint16_t keycode, keyrecord_t *record) {
+    if ((keycode >= AI_BANK_CLAUDE && keycode <= AI_NEXT_PAGE) ||
+        (keycode >= KC_F13 && keycode <= KC_F16)) {
+        if (record->event.pressed) {
+            uint8_t report[AI_AGENT_MACROPAD_REPORT_SIZE] = {0};
+            if (keycode == AI_NEXT_PAGE) {
+                report[0] = MSG_NEXT_PAGE;
+            } else if (keycode >= AI_BANK_CLAUDE && keycode <= AI_BANK_EMACS) {
+                report[0] = MSG_SELECT_BANK;
+                report[1] = keycode - AI_BANK_CLAUDE;
+            } else if (keycode <= KC_F14) {
+                report[0] = MSG_FOCUS_APP;
+                report[1] = keycode - KC_F13;
+            } else {
+                report[0] = MSG_PERMISSION_DECISION;
+                report[1] = keycode == KC_F15;
+                for (uint8_t i = 0; i < 4; i++) report[2 + i] = permission_token >> (8 * i);
+            }
+            raw_hid_send(report, sizeof(report));
+        }
+        return false;
+    }
     return ai_agent_macropad_process_record(keycode, record, AI_AGENT_KEY_0, NUM_MACROPAD_SLOTS);
 }
 
@@ -118,11 +135,37 @@ void matrix_scan_user(void) {
 // claims the report (kc_raw_hid_rx passes this straight back to
 // via_command_kb / via.c); false lets VIA's normal handling run.
 bool raw_hid_receive_kb(uint8_t *data, uint8_t length) {
+    if (length >= 11 && data[0] == MSG_BANK_STATE) {
+        if (data[1] < 3 && data[3] > 0 && data[4] <= 2 && data[5] <= 2 && data[6] <= 2) {
+            selected_bank = data[1];
+            bank_pages = data[3];
+            for (uint8_t i = 0; i < 3; i++) bank_attention[i] = data[4 + i];
+            permission_token = 0;
+            for (uint8_t i = 0; i < 4; i++) permission_token |= (uint32_t)data[7 + i] << (8 * i);
+        }
+        return true;
+    }
     ai_agent_macropad_track_via_remap(data, length, AI_AGENT_KEY_0, NUM_MACROPAD_SLOTS);
     return ai_agent_macropad_raw_hid_receive(data, length, DEVICE_ID_K0_MAX, NUM_MACROPAD_SLOTS);
 }
 
 bool rgb_matrix_indicators_user(void) {
+    rgb_matrix_set_color_all(0, 0, 0);
     ai_agent_macropad_paint_indicators(NUM_MACROPAD_SLOTS);
-    return true;
+    const uint8_t macro_leds[3] = {4, 9, 14};
+    uint8_t value = rgb_matrix_get_val();
+    bool blink_on = (timer_read32() / 500) % 2 == 0;
+    for (uint8_t i = 0; i < 3; i++) {
+        bool selected = selected_bank == i;
+        if (bank_attention[i] == 2 && blink_on) {
+            rgb_matrix_set_color(macro_leds[i], value, value / 2, 0);
+        } else if (bank_attention[i] == 1) {
+            uint8_t level = selected ? value : value / 2;
+            rgb_matrix_set_color(macro_leds[i], level, (uint16_t)level * 2 / 3, 0);
+        } else if (selected) {
+            rgb_matrix_set_color(macro_leds[i], value / 3, value / 3, value / 3);
+        }
+    }
+    if (bank_pages > 1) rgb_matrix_set_color(18, 0, value / 3, value / 2);
+    return false;
 }

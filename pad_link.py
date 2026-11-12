@@ -74,9 +74,13 @@ def discover_hid_device(vid, pid, handshake_timeout=1.5):
         try:
             dev.write(bytes([0]) + hid_protocol.pack_ping())
             deadline = time.monotonic() + handshake_timeout
+            retry_at = time.monotonic() + handshake_timeout / 2
             while time.monotonic() < deadline:
                 data = dev.read(hid_protocol.REPORT_SIZE, timeout=100)
                 if not data:
+                    if time.monotonic() >= retry_at:
+                        dev.write(bytes([0]) + hid_protocol.pack_ping())
+                        retry_at = deadline
                     continue
                 msg = hid_protocol.parse_report(bytes(data))
                 if msg and msg.get("t") == "hello":
@@ -114,6 +118,9 @@ def _pack_for_hid(obj):
     state "off" (fully dark — distinct from "idle"'s dim glow).
     """
     t = obj.get("t")
+    if t == "bank":
+        return hid_protocol.pack_bank_state(obj["bank"], obj["page"], obj["pages"], obj["attention"],
+                                           obj.get("permission_token", 0))
     if t == "slot":
         return hid_protocol.pack_slot(obj["i"], obj["state"])
     if t == "clear":
@@ -137,6 +144,9 @@ class HidPadLink:
     # class attribute (not a literal in _reconnect()) so tests can
     # shrink it instead of eating this delay for real.
     RECONNECT_POLL_SECONDS = 2
+    # The K0 receiver drops raw-HID bursts; 25 ms keeps slot and bank
+    # updates within its forwarding capacity, including clear reports.
+    WIRELESS_WRITE_INTERVAL = 0.025
 
     def __init__(self, on_device_event, vid=None, pid=None, on_reattach=None):
         self.on_device_event = on_device_event
@@ -152,6 +162,8 @@ class HidPadLink:
         # handshake() below.
         self._hello_event = threading.Event()
         self._last_hello = None
+        self._write_lock = threading.Lock()
+        self._last_write_at = None
 
         # An explicit vid/pid pins discovery to just that one (unnamed)
         # board; otherwise try every board this module knows about (see
@@ -227,11 +239,7 @@ class HidPadLink:
             log.debug("(headless) would send: %s", obj)
             return
         try:
-            # hidapi expects a leading report-ID byte on writes even
-            # though QMK's raw HID interface doesn't use numbered
-            # report IDs (id 0, implicit) — same convention on the
-            # read side in _read_loop below.
-            self._dev.write(bytes([0]) + report)
+            self._write_report(report)
         except hid.HIDException:
             log.exception("HID write failed")
 
@@ -239,9 +247,22 @@ class HidPadLink:
         if self._dev is None:
             return
         try:
-            self._dev.write(bytes([0]) + hid_protocol.pack_ping())
+            self._write_report(hid_protocol.pack_ping())
         except hid.HIDException:
             log.exception("HID write failed (handshake ping)")
+
+    def _write_report(self, report):
+        with self._write_lock:
+            if self._dev is None:
+                return
+            wireless = hid_protocol.KEYCHRON_K0_MAX_WIRELESS
+            if (self.vid, self.pid) == (wireless.vid, wireless.pid) and self._last_write_at is not None:
+                delay = self.WIRELESS_WRITE_INTERVAL - (time.monotonic() - self._last_write_at)
+                if delay > 0:
+                    time.sleep(delay)
+            # hidapi requires report-ID 0 before the unnumbered report.
+            self._dev.write(bytes([0]) + report)
+            self._last_write_at = time.monotonic()
 
     def _dispatch(self, msg):
         """The read loop calls this instead of on_device_event
@@ -270,10 +291,13 @@ class HidPadLink:
         self._hello_event.clear()
         self._send_ping()
         if self._hello_event.wait(timeout):
-            return {
+            result = {
                 "slots": self._last_hello.get("slots"),
                 "protocol": self._last_hello.get("protocol"),
             }
+            if self._last_hello.get("capabilities"):
+                result["capabilities"] = self._last_hello["capabilities"]
+            return result
         log.warning("pad didn't answer a slots handshake within %ss", timeout)
         return None
 
@@ -324,6 +348,7 @@ class HidPadLink:
                     self.attached = True
                     log.info("pad reattached over HID (path=%r)", path)
                     self.on_reattach()
+                    self._send_ping()
                     return
                 except hid.HIDException:
                     pass

@@ -309,6 +309,26 @@
       "name": "AI Slot 11",
       "title": "AI agent session slot 11",
       "shortName": "AI11"
+    },
+    {
+      "name": "Claude bank",
+      "title": "Claude bank",
+      "shortName": "Claude bank"
+    },
+    {
+      "name": "Codex bank",
+      "title": "Codex bank",
+      "shortName": "Codex bank"
+    },
+    {
+      "name": "Agent Shell bank",
+      "title": "Agent Shell bank",
+      "shortName": "Agent Shell bank"
+    },
+    {
+      "name": "Next page",
+      "title": "Next page",
+      "shortName": "Next page"
     }
   ],
   "layouts": {

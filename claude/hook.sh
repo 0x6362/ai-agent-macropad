@@ -79,6 +79,10 @@
 #    forwarding, so the real event still reaches the daemon correctly
 #    tagged agent=cursor either way — this guard only stops the
 #    untranslated, mistagged duplicate from claude/hook.sh.
+if [ "$AI_AGENT_MACROPAD_SOURCE" = "agent-shell" ]; then
+  exit 0
+fi
+
 SOCKET="$HOME/.ai-agent-macropad/daemon.sock"
 
 input=$(cat)
@@ -114,9 +118,11 @@ fi
 
 printf '%s' "$input" | jq -c \
   --arg pane "$TMUX_PANE" \
+  --arg socket "${TMUX%%,*}" \
   --arg ntype "$MACROPAD_NOTIFICATION_TYPE" \
   --arg ctty "$ctty" \
   '.tmux_pane = $pane
+   | .tmux_socket = $socket
    | .agent = "claude-code"
    | (if $ntype != "" then .notification_type = $ntype else . end)
    | (if $ctty  != "" then .controlling_tty = $ctty  else . end)' \

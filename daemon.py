@@ -71,10 +71,9 @@ best-effort: an older Claude Code (<2.1.224), no `claude` on PATH, no
 Grok Build ever installed/run, or any parse failure for either just
 means that source seeds nothing, and its pre-existing sessions fall
 back to the lazy-allocation-on-first-hook-event behavior instead.
-Codex has neither mechanism, so its pre-existing sessions always start
-out via the lazy-allocation fallback in handle_hook_event() instead,
-same as any hook event that arrives before this daemon ever saw that
-session's SessionStart.
+Banked pads seed Codex sessions by matching live tmux TUI titles to
+read-only local session metadata, independently of the shared backend's
+hook environment. Other boards keep lazy allocation on the first hook.
 """
 import asyncio
 import json
@@ -86,10 +85,19 @@ import subprocess
 import sys
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 import hid_protocol
+from codex_terminals import discover_codex_terminals
 from pad_link import HidPadLink
+from session_banks import SessionBanks, SlotAddress, SOURCES
+
+
+@dataclass(frozen=True)
+class TmuxTarget:
+    socket_path: str
+    pane_id: str
 
 # --- Config ------------------------------------------------------------
 
@@ -323,9 +331,9 @@ class SlotManager:
 #   unexpected shape just mean an empty list. See
 #   discover_running_grok_sessions() below.
 #
-# Codex has neither, so a pre-existing Codex session always just waits
-# for its first real hook event, same as every other lazy-allocation
-# path in this file.
+# Banked pads also discover Codex TUIs by matching live terminal titles
+# against local session metadata; see codex_terminals.py. Their shared
+# backend's hook environment does not identify the displaying terminal.
 
 def discover_running_sessions():
     try:
@@ -438,7 +446,7 @@ def _controlling_tty(pid):
     return f"/dev/{tty}"
 
 
-def _tmux_pane_for_tty(tty):
+def _tmux_target_for_tty(tty):
     """Cross-references a controlling tty against every tmux pane on the
     machine to recover the pane id hook.sh would otherwise report via
     $TMUX_PANE — only meaningful when _controlling_tty() above actually
@@ -447,7 +455,7 @@ def _tmux_pane_for_tty(tty):
     """
     try:
         result = subprocess.run(
-            ["tmux", "list-panes", "-a", "-F", "#{pane_tty} #{pane_id}"],
+            ["tmux", "list-panes", "-a", "-F", "#{pane_tty}\t#{socket_path}\t#{pane_id}"],
             capture_output=True, timeout=2, text=True,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
@@ -455,9 +463,9 @@ def _tmux_pane_for_tty(tty):
     if result.returncode != 0:
         return None
     for line in result.stdout.splitlines():
-        pane_tty, _, pane_id = line.partition(" ")
-        if pane_tty == tty:
-            return pane_id
+        fields = line.split("\t")
+        if len(fields) == 3 and fields[0] == tty:
+            return TmuxTarget(fields[1], fields[2])
     return None
 
 
@@ -565,6 +573,7 @@ class Daemon:
         # so a running daemon with real hardware attached never
         # actually uses NUM_SLOTS unless the handshake fails.
         self.slots = SlotManager(NUM_SLOTS)
+        self._configuring_pad = False
         # slot index -> last {"t": "slot"/"clear", ...} message sent for
         # it, kept in sync by _send_pad() below. Replayed by
         # resync_pad() after the transport reattaches — either a real
@@ -572,6 +581,14 @@ class Daemon:
         # reopen cycle (_reconcile_pad() below) — since the pad's own
         # display has no memory of what it missed while it was gone.
         self.pad_state = {}
+        self._display_lock = threading.RLock()
+        self._display_view = None
+        self.selected_session = None
+        self.session_permissions = {}
+        self._approval_identity = None
+        self._approval_token = 0
+        self._permission_tokens = False
+        self.applications = ("Emacs", "Ghostty")
         self.pad = HidPadLink(self.on_device_event, on_reattach=self.resync_pad)
         # Serializes open()/close() calls against this pad so a
         # reconcile triggered by a session starting can never run
@@ -588,6 +605,7 @@ class Daemon:
         # Populated at SessionStart, cleared at SessionEnd. Empty
         # string (not running inside tmux) is never stored.
         self.session_panes = {}
+        self.session_tmux = {}
         # session_id -> project folder name (same string already used
         # for the pad's slot label), used to match a VS Code window by
         # title when no tmux pane is available. This is the primary
@@ -600,6 +618,7 @@ class Daemon:
         # Terminal.app tab this session is running in — an exact
         # match, unlike VS Code's fuzzy title substring match.
         self.session_ttys = {}
+        self.session_emacs = {}
         # session_id -> agent name (e.g. "claude-code", "codex",
         # "grok-build", "cursor"), from the payload's own "agent" field
         # (each adapter script tags its own — see claude/hook.sh,
@@ -636,13 +655,95 @@ class Daemon:
         drop the label a PreToolUse message set earlier. "clear" pops
         the slot entirely — a freed slot has nothing to resync.
         """
-        i = msg.get("i")
-        if i is not None:
-            if msg.get("t") == "clear":
-                self.pad_state.pop(i, None)
+        with self._display_lock:
+            i = msg.get("i")
+            if i is not None:
+                if msg.get("t") == "clear":
+                    self.pad_state.pop(i, None)
+                else:
+                    self.pad_state.setdefault(i, {}).update(msg)
+            if isinstance(self.slots, SessionBanks):
+                if self._display_view != self.slots.view:
+                    self._refresh_display()
+                else:
+                    physical = self.slots.physical_index(i) if isinstance(i, SlotAddress) else i
+                    if physical is not None:
+                        self.pad.write_json({**msg, "i": physical})
+                    self._send_bank_state()
             else:
-                self.pad_state.setdefault(i, {}).update(msg)
-        self.pad.write_json(msg)
+                self.pad.write_json(msg)
+
+    def _allocate_slot(self, session_id, agent, session_kind=None):
+        if isinstance(self.slots, SessionBanks):
+            if agent == "codex" and self.slots.slot_for(session_id) is None:
+                binding = self._codex_terminal(session_id)
+                if binding is None:
+                    log.info("excluded Codex session without a unique terminal session=%s", session_id)
+                    return None
+                self._remember_codex_terminal(binding)
+            if agent == "claude-code" and self.slots.slot_for(session_id) is None:
+                if not self._terminal_available(self.session_tmux.get(session_id),
+                                                self.session_ttys.get(session_id)):
+                    log.info("excluded non-terminal Claude session=%s", session_id)
+                    return None
+                if session_kind is None:
+                    session_kind = next((s.get("kind") for s in discover_running_sessions()
+                                         if s.get("sessionId") == session_id), None)
+                if session_kind is not None and session_kind != "interactive":
+                    log.info("excluded Claude session=%s kind=%s", session_id, session_kind)
+                    return None
+            return self.slots.allocate(session_id, agent)
+        return self.slots.allocate(session_id)
+
+    def _codex_terminal(self, session_id):
+        return next((binding for binding in discover_codex_terminals()
+                     if binding["sessionId"] == session_id), None)
+
+    def _remember_codex_terminal(self, binding):
+        session_id = binding["sessionId"]
+        self.session_tmux[session_id] = TmuxTarget(binding["tmux_socket"], binding["tmux_pane"])
+        self.session_panes[session_id] = binding["tmux_pane"]
+        self.session_ttys[session_id] = binding["tty"]
+
+    def _terminal_available(self, target, tty):
+        """Whether a route identifies a live local terminal without raising it."""
+        if target:
+            return self._dispatch_tmux_target(None, target, probe_only=True)
+        if tty:
+            owner = _pid_on_tty(tty)
+            return bool(owner and _gui_app_ancestor_pid(owner))
+        return False
+
+    def _send_bank_state(self):
+        source, page = self.slots.view
+        identity = (self.selected_session, self.session_permissions.get(self.selected_session))
+        if identity != self._approval_identity:
+            self._approval_token = (self._approval_token + 1) % (1 << 32) or 1
+            self._approval_identity = identity
+        attention = [0, 0, 0]
+        for address, message in self.pad_state.items():
+            if not isinstance(address, SlotAddress):
+                continue
+            state = message.get("state")
+            level = 2 if state in ("question", "tool_stalled") else 1 if state == "waiting" else 0
+            bank = SOURCES.index(address.source)
+            attention[bank] = max(attention[bank], level)
+        self.pad.write_json({"t": "bank", "bank": SOURCES.index(source),
+                             "page": min(page, 255), "pages": min(self.slots.page_count(), 255),
+                             "attention": attention, "permission_token": self._approval_token})
+
+    def _refresh_display(self):
+        with self._display_lock:
+            if not isinstance(self.slots, SessionBanks):
+                return
+            self._display_view = self.slots.view
+            self._send_bank_state()
+            for physical, session_id in enumerate(self.slots.slot_to_session):
+                address = self.slots.slot_for(session_id)
+                message = self.pad_state.get(address)
+                self.pad.write_json({**message, "i": physical} if message else {"t": "clear", "i": physical})
+            log.info("display bank=%s page=%d/%d", self.slots.selected_source,
+                     self.slots.view[1] + 1, self.slots.page_count())
 
     def resync_pad(self):
         """Replays every slot's last-known state after the transport
@@ -655,6 +756,9 @@ class Daemon:
         pad_state concurrently from the connection-handling side.
         """
         log.info("pad reattached — resyncing %d slot(s)", len(self.pad_state))
+        if isinstance(self.slots, SessionBanks):
+            self._refresh_display()
+            return
         for msg in list(self.pad_state.values()):
             self.pad.write_json(msg)
 
@@ -692,6 +796,7 @@ class Daemon:
             if want_open and not self.pad.attached:
                 await asyncio.to_thread(self.pad.open)
                 if self.pad.attached:
+                    await asyncio.to_thread(self.pad.handshake)
                     self.resync_pad()
             elif not want_open and self.pad.attached:
                 await asyncio.to_thread(self.pad.close)
@@ -731,10 +836,41 @@ class Daemon:
     # for a stale mapping nothing else would ever free.
     def on_device_event(self, msg):
         t = msg.get("t")
-        if t == "key":
+        if t == "hello":
+            if not self._configuring_pad:
+                self._adopt_banked_handshake(msg)
+        elif t in ("select_bank", "next_page"):
+            if not isinstance(self.slots, SessionBanks):
+                return
+            with self._display_lock:
+                if t == "select_bank":
+                    index = msg.get("bank")
+                    if not isinstance(index, int) or not 0 <= index < len(SOURCES):
+                        return
+                    self.slots.select_bank(index)
+                else:
+                    self.slots.next_page()
+                self.selected_session = None
+                self._refresh_display()
+        elif t == "focus_app":
+            index = msg.get("app")
+            if isinstance(index, int) and 0 <= index < len(self.applications):
+                self._focus_application(self.applications[index])
+        elif t == "permission_decision":
+            with self._display_lock:
+                identity = (self._approval_identity
+                            if self._permission_tokens and msg.get("token") == self._approval_token
+                            and self._approval_token != 0 else None)
+            if identity is not None:
+                self._respond_selected_permission(msg.get("allow"), expected_identity=identity)
+        elif t == "key":
             i = msg.get("i")
-            valid_index = i is not None and i < self.slots.num_slots
+            valid_index = i is not None and 0 <= i < self.slots.num_slots
             session_id = self.slots.slot_to_session[i] if valid_index else None
+            self.selected_session = session_id
+            if isinstance(self.slots, SessionBanks):
+                with self._display_lock:
+                    self._send_bank_state()
             agent = self.session_agents.get(session_id, "<unknown>")
             log.info("key %s -> session %s (agent=%s)", i, session_id, agent)
             if session_id is None:
@@ -749,7 +885,7 @@ class Daemon:
             self.dispatch_bring_to_front(i, session_id)
         elif t == "key_held":
             i = msg.get("i")
-            if i is not None and i < self.slots.num_slots:
+            if i is not None and 0 <= i < self.slots.num_slots:
                 self._evict_slot(i)
         else:
             log.info("unhandled device event: %s", msg)
@@ -763,15 +899,22 @@ class Daemon:
         (handle_hook_event() above) exactly, but keyed off the slot
         index rather than a session_id from a hook payload.
         """
-        session_id = self.slots.evict(i)
+        session_id = self.slots.slot_to_session[i]
+        address = self.slots.slot_for(session_id)
+        self.slots.evict(i)
+        if self.selected_session == session_id:
+            self.selected_session = None
         if session_id is not None:
             self.pending_calls.pop(session_id, None)
             self.session_panes.pop(session_id, None)
+            self.session_tmux.pop(session_id, None)
             self.session_ttys.pop(session_id, None)
+            self.session_emacs.pop(session_id, None)
+            self.session_permissions.pop(session_id, None)
             self.session_projects.pop(session_id, None)
             self.session_agents.pop(session_id, None)
             self.session_dispatch_method.pop(session_id, None)
-        self._send_pad({"t": "clear", "i": i})
+        self._send_pad({"t": "clear", "i": address if address is not None else i})
         events_log.info(
             "MAPPED slot=%s cleared (ManualEvict session=%s)", i, session_id
         )
@@ -788,6 +931,21 @@ class Daemon:
         pane = self.session_panes.get(session_id)
         tty = self.session_ttys.get(session_id)
         project = self.session_projects.get(session_id)
+        emacs_session = self.session_emacs.get(session_id)
+        if emacs_session:
+            return [("emacs", emacs_session, self._dispatch_emacs)]
+        if isinstance(self.slots, SessionBanks) and self.session_agents.get(session_id) == "codex":
+            binding = self._codex_terminal(session_id)
+            if binding is None:
+                return []
+            self._remember_codex_terminal(binding)
+            return [("tmux", self.session_tmux[session_id], self._dispatch_tmux_target)]
+        if target := self.session_tmux.get(session_id):
+            return [("tmux", target, self._dispatch_tmux_target)]
+        if self.session_agents.get(session_id) in ("claude-code", "codex"):
+            return [("terminal", tty, self._dispatch_terminal),
+                    ("iterm", tty, self._dispatch_iterm),
+                    ("generic_gui", tty, self._dispatch_generic_gui)]
         return [
             ("tmux", pane, self._dispatch_tmux),
             ("terminal", tty, self._dispatch_terminal),
@@ -865,6 +1023,125 @@ class Daemon:
             if arg and method(slot, arg, probe_only=True):
                 self.session_dispatch_method[session_id] = name
                 return
+
+    def _dispatch_emacs(self, slot, session_id, probe_only=False):
+        expression = "(agent-shell-macropad-focus-session %s %s)" % (
+            json.dumps(session_id, ensure_ascii=False), "t" if probe_only else "nil"
+        )
+        try:
+            result = subprocess.run(
+                ["emacsclient", "--eval", expression],
+                capture_output=True, timeout=3, text=True,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired) as error:
+            log.warning("Emacs dispatch unavailable: %s", error)
+            return False
+        success = result.returncode == 0 and result.stdout.strip() == "t"
+        events_log.info("DISPATCH slot=%s method=emacs session=%s result=%s",
+                        slot, session_id, "ok" if success else "failed")
+        return success
+
+    def _focus_application(self, application):
+        try:
+            result = subprocess.run(["open", "-a", application], capture_output=True,
+                                    timeout=3, text=True)
+        except (FileNotFoundError, subprocess.TimeoutExpired) as error:
+            log.warning("application focus unavailable: %s", error)
+            return False
+        log.info("application focus app=%s result=%s", application, result.returncode)
+        return result.returncode == 0
+
+    def _respond_selected_permission(self, allow, expected_identity=None):
+        with self._display_lock:
+            identity = (self.selected_session, self.session_permissions.get(self.selected_session))
+            if expected_identity is not None and identity != expected_identity:
+                return False
+            session, request = identity
+        if not isinstance(allow, bool) or self.session_agents.get(session) != "agent-shell":
+            return False
+        target = self.session_emacs.get(session)
+        if request is None or target is None:
+            return False
+        expression = "(agent-shell-macropad-respond %s %s %s)" % (
+            json.dumps(target, ensure_ascii=False), json.dumps(request, ensure_ascii=False),
+            '"allow"' if allow else '"deny"',
+        )
+        try:
+            result = subprocess.run(["emacsclient", "--eval", expression],
+                                    capture_output=True, timeout=3, text=True)
+        except (FileNotFoundError, subprocess.TimeoutExpired) as error:
+            log.warning("Emacs permission response unavailable: %s", error)
+            return False
+        success = result.returncode == 0 and result.stdout.strip() == "t"
+        if success and self.session_permissions.get(session) == request:
+            self.session_permissions.pop(session, None)
+        log.info("permission response session=%s request=%s allow=%s result=%s",
+                 session, request, allow, success)
+        return success
+
+    def _dispatch_tmux_target(self, slot, target, probe_only=False):
+        """Select an exact server/pane and raise its attached local terminal."""
+        command = ["tmux", "-S", target.socket_path]
+        try:
+            panes = subprocess.run(
+                command + ["list-panes", "-a", "-F",
+                           "#{pane_id}\t#{session_id}\t#{window_id}"],
+                capture_output=True, text=True, timeout=2,
+            )
+            if panes.returncode:
+                return False
+            matches = [row.split("\t") for row in panes.stdout.splitlines()
+                       if row.split("\t")[0] == target.pane_id]
+            if not matches:
+                log.warning("tmux target missing socket=%s pane=%s",
+                            target.socket_path, target.pane_id)
+                return False
+            clients = subprocess.run(
+                command + ["list-clients", "-F", "#{client_tty}\t#{session_id}"],
+                capture_output=True, text=True, timeout=2,
+            )
+            if clients.returncode:
+                return False
+            local_clients = []
+            for row in clients.stdout.splitlines():
+                fields = row.split("\t")
+                if len(fields) != 2:
+                    continue
+                owner = _pid_on_tty(fields[0])
+                if owner and _gui_app_ancestor_pid(owner):
+                    local_clients.append(fields)
+            attached = [(pane, client) for pane in matches for client in local_clients
+                        if len(pane) == 3 and pane[1] == client[1]]
+            if len(attached) == 1:
+                pane, client = attached[0]
+            elif not attached and len(matches) == 1 and len(local_clients) == 1:
+                pane, client = matches[0], local_clients[0]
+            else:
+                log.warning("tmux target has no unique local client socket=%s pane=%s",
+                            target.socket_path, target.pane_id)
+                return False
+            if len(pane) != 3:
+                return False
+            if not probe_only:
+                result = subprocess.run(
+                    command + ["select-window", "-t", f"{pane[1]}:{pane[2]}", ";",
+                               "select-pane", "-t", target.pane_id, ";",
+                               "switch-client", "-c", client[0], "-t", pane[1]],
+                    capture_output=True, text=True, timeout=2,
+                )
+                if result.returncode:
+                    log.warning("tmux focus failed socket=%s pane=%s reason=%s",
+                                target.socket_path, target.pane_id, result.stderr.strip())
+                    return False
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            log.exception("tmux target unavailable socket=%s pane=%s",
+                          target.socket_path, target.pane_id)
+            return False
+        success = self._dispatch_generic_gui(slot, client[0], probe_only=probe_only)
+        events_log.info("DISPATCH slot=%s socket=%s pane=%s client=%s result=%s",
+                        slot, target.socket_path, target.pane_id, client[0],
+                        "probe_ok" if success and probe_only else "ok" if success else "failed")
+        return success
 
     def _dispatch_tmux(self, slot, pane, probe_only=False):
         """Try tmux select-window. Returns True on success, False on
@@ -1129,97 +1406,32 @@ class Daemon:
         return True
 
     def _dispatch_generic_gui(self, slot, tty, probe_only=False):
-        """Fallback for any terminal emulator without a bespoke method
-        above (Alacritty, Kitty, WezTerm, Hyper, Ghostty, ...): finds
-        the GUI app that owns this tty via process-tree ancestry
-        (_pid_on_tty + _gui_app_ancestor_pid) and raises it by pid
-        through System Events, instead of needing a new per-app
-        AppleScript method — the whole point of this method existing.
+        """Raise the terminal app owning TTY through its installed app bundle.
 
-        Coarser than the tmux/Terminal.app/iTerm dispatches above: it
-        raises the app's frontmost window, not necessarily the
-        specific tab/window hosting this tty. Most of these apps are
-        single-process, multi-window, and there's no app-agnostic way
-        to ask System Events "which of your windows has this tty" —
-        only apps with their own scripting dictionary (like Terminal
-        and iTerm) expose that. Still strictly better than no dispatch
-        at all, which is the alternative for anything not on the
-        bespoke list above.
-
-        probe_only=True still does the (side-effect-free) pid
-        resolution and confirms System Events can see that pid, but
-        skips the frontmost/AXRaise lines — see _dispatch_terminal's
-        docstring for why (same rationale, same warm_dispatch_cache()
-        caller).
+        This activates the app's front window. Pane selection is handled
+        separately by tmux; terminal window/tab selection is app-specific.
         """
         owner_pid = _pid_on_tty(tty)
-        if owner_pid is None:
-            log.warning("no process found attached to tty %s", tty)
-            events_log.info("DISPATCH slot=%s tty=%s result=no_tty_owner", slot, tty)
-            return False
-
-        app_pid = _gui_app_ancestor_pid(owner_pid)
+        app_pid = _gui_app_ancestor_pid(owner_pid) if owner_pid else None
         if app_pid is None:
-            log.warning("no GUI app ancestor found for tty %s (pid %s)", tty, owner_pid)
-            events_log.info("DISPATCH slot=%s tty=%s result=no_app_ancestor", slot, tty)
+            log.warning("no GUI app ancestor found for tty %s", tty)
             return False
-
-        activate_block = "" if probe_only else '''
-            tell item 1 of matches
-                set frontmost to true
-                try
-                    perform action "AXRaise" of window 1
-                end try
-            end tell
-        '''
-        script = f'''
-        tell application "System Events"
-            set matches to (processes whose unix id is {app_pid})
-            if (count of matches) is 0 then return "no_process"
-            {activate_block}
-        end tell
-        return "ok"
-        '''
         try:
             result = subprocess.run(
-                ["osascript", "-e", script],
-                capture_output=True,
-                timeout=3,
-                text=True,
+                ["ps", "-o", "comm=", "-p", str(app_pid)],
+                capture_output=True, timeout=2, text=True,
             )
-        except FileNotFoundError:
-            log.warning("osascript not found — generic dispatch requires macOS")
-            events_log.info(
-                "DISPATCH slot=%s tty=%s result=osascript_not_found", slot, tty
-            )
+        except (FileNotFoundError, subprocess.TimeoutExpired):
             return False
-        except subprocess.TimeoutExpired:
-            log.warning(
-                "osascript timed out activating app pid %s for tty %s", app_pid, tty
-            )
-            events_log.info("DISPATCH slot=%s tty=%s result=timeout", slot, tty)
+        executable = result.stdout.strip()
+        bundle, separator, _ = executable.partition(".app/Contents/MacOS/")
+        if result.returncode or not separator:
             return False
-
-        output = result.stdout.strip()
-        if result.returncode != 0 or output != "ok":
-            reason = output or result.stderr.strip() or "unknown_error"
-            log.warning(
-                "generic app activation failed for tty %r (pid %s): %s",
-                tty, app_pid, reason,
-            )
-            events_log.info(
-                "DISPATCH slot=%s tty=%s result=generic_error reason=%r",
-                slot, tty, reason,
-            )
-            return False
-
-        if probe_only:
-            events_log.info("DISPATCH slot=%s tty=%s result=probe_ok", slot, tty)
-            return True
-
-        log.info("activated app pid %s for tty %r (slot %s)", app_pid, tty, slot)
-        events_log.info("DISPATCH slot=%s tty=%s result=ok", slot, tty)
-        return True
+        success = probe_only or self._focus_application(bundle + ".app")
+        events_log.info("DISPATCH slot=%s tty=%s app_pid=%s result=%s",
+                        slot, tty, app_pid,
+                        "probe_ok" if success and probe_only else "ok" if success else "failed")
+        return success
 
     def _dispatch_vscode(self, slot, project, probe_only=False):
         """Try to raise a VS Code window whose title contains the
@@ -1435,14 +1647,37 @@ class Daemon:
             events_log.info("DROPPED reason=no_session_id")
             return
 
+        codex_client = agent == "codex" and isinstance(self.slots, SessionBanks)
+        if not codex_client:
+            if payload.get("tmux_pane") and payload.get("tmux_socket"):
+                target = TmuxTarget(payload["tmux_socket"], payload["tmux_pane"])
+                if self.session_tmux.get(session_id) != target:
+                    self.session_dispatch_method.pop(session_id, None)
+                self.session_tmux[session_id] = target
+            elif "tmux_socket" in payload and "tmux_pane" in payload:
+                self.session_tmux.pop(session_id, None)
+                self.session_panes.pop(session_id, None)
+                self.session_dispatch_method.pop(session_id, None)
+
+        if not codex_client and payload.get("controlling_tty"):
+            self.session_ttys[session_id] = payload["controlling_tty"]
+
+        if payload.get("emacs_session"):
+            self.session_emacs[session_id] = payload["emacs_session"]
+            request = payload.get("permission_request_id")
+            if payload.get("permission_count") == 1 and request is not None:
+                self.session_permissions[session_id] = request
+            else:
+                self.session_permissions.pop(session_id, None)
+
         if event_name == "SessionStart":
-            i = self.slots.allocate(session_id)
+            i = self._allocate_slot(session_id, agent)
             self._kick_reconcile()
             self.session_agents[session_id] = agent
-            pane = payload.get("tmux_pane")
+            pane = self.session_panes.get(session_id) if codex_client else payload.get("tmux_pane")
             if pane:
                 self.session_panes[session_id] = pane
-            tty = payload.get("controlling_tty")
+            tty = self.session_ttys.get(session_id) if codex_client else payload.get("controlling_tty")
             if tty:
                 self.session_ttys[session_id] = tty
             label = Path(payload.get("cwd", "")).name or session_id[:8]
@@ -1463,7 +1698,12 @@ class Daemon:
             self._kick_reconcile(delay=self.IDLE_CLOSE_GRACE_SECONDS)
             self.pending_calls.pop(session_id, None)
             self.session_panes.pop(session_id, None)
+            self.session_tmux.pop(session_id, None)
             self.session_ttys.pop(session_id, None)
+            self.session_emacs.pop(session_id, None)
+            self.session_permissions.pop(session_id, None)
+            if self.selected_session == session_id:
+                self.selected_session = None
             self.session_projects.pop(session_id, None)
             self.session_agents.pop(session_id, None)
             self.session_dispatch_method.pop(session_id, None)
@@ -1486,10 +1726,10 @@ class Daemon:
             # not just SessionStart — otherwise dispatch_bring_to_front
             # never learns a target for this session and every keypress
             # logs no_target_known until the session ends.
-            i = self.slots.allocate(session_id)
+            i = self._allocate_slot(session_id, agent)
             self._kick_reconcile()
             if i is None:
-                events_log.info("DROPPED reason=no_free_slot")
+                events_log.info("DROPPED reason=no_eligible_slot")
                 return
             label = Path(payload.get("cwd", "")).name or session_id[:8]
             self.session_projects[session_id] = label
@@ -1502,7 +1742,7 @@ class Daemon:
         # learning its pane (claude agents --json has no tmux info), so
         # this can't be folded into the "i is None" branch above without
         # leaving those sessions permanently pane-less.
-        if session_id not in self.session_panes:
+        if not codex_client and session_id not in self.session_panes:
             pane = payload.get("tmux_pane")
             if pane:
                 self.session_panes[session_id] = pane
@@ -1671,28 +1911,37 @@ class Daemon:
                 discover_running_grok_sessions(), "grok-build",
                 str(_grok_active_sessions_path()),
             ),
+            (discover_codex_terminals() if isinstance(self.slots, SessionBanks) else [],
+             "codex", "live Codex terminal clients"),
         )
         for sessions, agent, source_label in sources:
+            seeded = 0
             for s in sessions:
                 session_id = s.get("sessionId")
                 if not session_id:
                     continue
-                i = self.slots.allocate(session_id)
+                if (isinstance(self.slots, SessionBanks) and agent == "claude-code"
+                        and s.get("kind") not in (None, "interactive")):
+                    continue
+                if agent == "codex":
+                    self._remember_codex_terminal(s)
+                    tty = s["tty"]
+                else:
+                    tty = _controlling_tty(s["pid"]) if s.get("pid") else None
+                    if tty:
+                        self.session_ttys[session_id] = tty
+                        target = _tmux_target_for_tty(tty)
+                        if target:
+                            self.session_tmux[session_id] = target
+                            self.session_panes[session_id] = target.pane_id
+
+                i = self._allocate_slot(session_id, agent, session_kind=s.get("kind"))
                 if i is None:
                     continue
+                seeded += 1
                 label = Path(s.get("cwd", "")).name or session_id[:8]
                 self.session_projects[session_id] = label
                 self.session_agents[session_id] = agent
-
-                tty = None
-                pid = s.get("pid")
-                if pid:
-                    tty = _controlling_tty(pid)
-                if tty:
-                    self.session_ttys[session_id] = tty
-                    pane = _tmux_pane_for_tty(tty)
-                    if pane:
-                        self.session_panes[session_id] = pane
 
                 self._spawn_dispatch_cache_warmup(i, session_id)
 
@@ -1703,9 +1952,13 @@ class Daemon:
                 )
             if sessions:
                 log.info(
-                    "seeded %d pre-existing session(s) from %s",
-                    len(sessions), source_label,
+                    "seeded %d of %d discovered session(s) from %s",
+                    seeded, len(sessions), source_label,
                 )
+
+        if isinstance(self.slots, SessionBanks):
+            self._refresh_display()
+            return
 
         cleared = 0
         for i in range(self.slots.num_slots):
@@ -1714,6 +1967,30 @@ class Daemon:
                 cleared += 1
         if cleared:
             log.info("cleared %d unclaimed slot(s) to off at startup", cleared)
+
+    def _adopt_banked_handshake(self, handshake):
+        """Keep live assignments when a banked pad appears after headless startup."""
+        if not handshake.get("slots") or not handshake.get("capabilities", 0) & hid_protocol.CAP_SESSION_BANKS:
+            return
+        with self._display_lock:
+            if isinstance(self.slots, SessionBanks):
+                return
+            snapshots = [(session, self.pad_state.get(address))
+                         for session, address in self.slots.session_to_slot.items()]
+            self.apply_handshake(handshake)
+            self.pad_state = {}
+            self._display_view = None
+            self.selected_session = None
+            for session, message in snapshots:
+                address = self._allocate_slot(session, self.session_agents.get(session, "claude-code"))
+                if address is not None and message:
+                    self.pad_state[address] = {**message, "i": address}
+                if session in self.pending_calls:
+                    if address is None:
+                        self.pending_calls.pop(session)
+                    else:
+                        self.pending_calls[session]["slot"] = address
+            self._refresh_display()
 
     def apply_handshake(self, handshake):
         """Size self.slots from a pad's handshake() result (Phase 3),
@@ -1735,6 +2012,7 @@ class Daemon:
         start_unix_server in serve(), so there aren't any yet.
         """
         if handshake and handshake.get("slots"):
+            self._permission_tokens = bool(handshake.get("capabilities", 0) & hid_protocol.CAP_PERMISSION_TOKEN)
             protocol = handshake.get("protocol")
             if protocol is not None and protocol != hid_protocol.PROTOCOL_VERSION:
                 if protocol > hid_protocol.PROTOCOL_VERSION:
@@ -1750,7 +2028,9 @@ class Daemon:
                         "(unknown states render as the fallback color)",
                         protocol, hid_protocol.PROTOCOL_VERSION,
                     )
-            self.slots = SlotManager(handshake["slots"])
+            self.slots = (SessionBanks(handshake["slots"])
+                          if handshake.get("capabilities", 0) & hid_protocol.CAP_SESSION_BANKS
+                          else SlotManager(handshake["slots"]))
             log.info(
                 "pad handshake reports %d slot(s) protocol=%s — resized SlotManager accordingly",
                 handshake["slots"], protocol,
@@ -1766,6 +2046,7 @@ class Daemon:
         if sock_path.exists():
             sock_path.unlink()
 
+        self._configuring_pad = True
         self.pad.open()
         # Must happen before start_unix_server below so no hook event
         # can arrive and get mapped under the old (possibly wrong)
@@ -1776,6 +2057,7 @@ class Daemon:
         # of them arriving and hitting handle_hook_event's own
         # allocate() first.
         self.seed_existing_sessions()
+        self._configuring_pad = False
         # If nothing was seeded, release the handle we just opened for
         # the handshake above rather than holding it for however long
         # it takes the first real session to start — same debounced
@@ -1788,12 +2070,29 @@ class Daemon:
         )
         log.info("listening on %s", SOCKET_PATH)
 
+        # Emacs sends its snapshots through this socket, so the event loop
+        # must keep accepting connections while emacsclient waits.
+        await asyncio.to_thread(self.resync_emacs_sessions)
+
         watcher_task = asyncio.create_task(self.watch_stalled_calls())
 
         async with server:
             await server.serve_forever()
 
         watcher_task.cancel()
+
+    def resync_emacs_sessions(self):
+        """Ask the live bridge to reannounce open sessions without focusing them."""
+        try:
+            result = subprocess.run(
+                ["emacsclient", "--eval",
+                 "(when (fboundp 'agent-shell-macropad-resync) (agent-shell-macropad-resync))"],
+                capture_output=True, text=True, timeout=3,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            log.info("Emacs bridge unavailable for startup resync")
+            return
+        log.info("Emacs bridge startup resync result=%s", result.stdout.strip())
 
 
 def main():

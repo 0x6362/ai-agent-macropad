@@ -46,6 +46,81 @@ def test_dispatch_tmux_timeout_is_failure(recording_daemon, monkeypatch):
     assert d._dispatch_tmux(0, "%3") is False
 
 
+def tmux_terminal(monkeypatch, d, panes="%3\t$1\t@2\n", clients="/dev/ttys005\t$0\n"):
+    commands = []
+
+    def run(command, **kwargs):
+        commands.append(command)
+        if "list-panes" in command:
+            return fake_result(stdout=panes)
+        if "list-clients" in command:
+            return fake_result(stdout=clients)
+        return fake_result()
+
+    monkeypatch.setattr(daemon.subprocess, "run", run)
+    monkeypatch.setattr(daemon, "_pid_on_tty", lambda tty: 10)
+    monkeypatch.setattr(daemon, "_gui_app_ancestor_pid", lambda pid: 20)
+    return commands
+
+
+def test_exact_tmux_focus_selects_pane_switches_client_and_raises_terminal(recording_daemon, monkeypatch):
+    d, _ = recording_daemon
+    commands = tmux_terminal(monkeypatch, d)
+    raised = []
+    monkeypatch.setattr(d, "_dispatch_generic_gui", lambda slot, tty, **kwargs: raised.append(tty) or True)
+    assert d._dispatch_tmux_target(0, daemon.TmuxTarget("/tmp/named-server", "%3"))
+    assert all(command[:3] == ["tmux", "-S", "/tmp/named-server"] for command in commands)
+    assert commands[-1][3:] == ["select-window", "-t", "$1:@2", ";", "select-pane", "-t", "%3", ";",
+                               "switch-client", "-c", "/dev/ttys005", "-t", "$1"]
+    assert raised == ["/dev/ttys005"]
+
+
+def test_tmux_probe_does_not_select_or_raise(recording_daemon, monkeypatch):
+    d, _ = recording_daemon
+    commands = tmux_terminal(monkeypatch, d)
+    monkeypatch.setattr(d, "_dispatch_generic_gui", lambda slot, tty, probe_only=False: probe_only)
+    assert d._dispatch_tmux_target(0, daemon.TmuxTarget("/tmp/server", "%3"), probe_only=True)
+    assert len(commands) == 2
+
+
+def test_missing_exact_tmux_target_never_guesses_an_editor(recording_daemon, monkeypatch):
+    d, _ = recording_daemon
+    commands = tmux_terminal(monkeypatch, d, panes="%4\t$0\t@1\n")
+    d.session_tmux["s"] = daemon.TmuxTarget("/tmp/server", "%3")
+    d.session_projects["s"] = "same-project"
+    monkeypatch.setattr(d, "_dispatch_vscode", lambda *args: (_ for _ in ()).throw(AssertionError("wrong target")))
+    d.dispatch_bring_to_front(0, "s")
+    assert len(commands) == 1
+
+
+def test_native_session_without_terminal_target_never_guesses_an_editor(recording_daemon, monkeypatch):
+    d, _ = recording_daemon
+    d.session_agents["s"] = "codex"
+    d.session_projects["s"] = "same-project"
+    assert all(not target for _, target, _ in d._dispatch_candidates("s"))
+
+
+def test_ambiguous_tmux_clients_do_not_change_focus(recording_daemon, monkeypatch):
+    d, _ = recording_daemon
+    commands = tmux_terminal(monkeypatch, d, clients="/dev/ttys001\t$1\n/dev/ttys002\t$1\n")
+    assert not d._dispatch_tmux_target(0, daemon.TmuxTarget("/tmp/server", "%3"))
+    assert len(commands) == 2
+
+
+def test_ghostty_activation_uses_the_owning_app_bundle(recording_daemon, monkeypatch):
+    d, _ = recording_daemon
+    monkeypatch.setattr(daemon, "_pid_on_tty", lambda tty: 10)
+    monkeypatch.setattr(daemon, "_gui_app_ancestor_pid", lambda pid: 20)
+    monkeypatch.setattr(daemon.subprocess, "run", lambda *args, **kwargs:
+                        fake_result(stdout="/Applications/Ghostty.app/Contents/MacOS/ghostty\n"))
+    raised = []
+    monkeypatch.setattr(d, "_focus_application", lambda app: raised.append(app) or True)
+    assert d._dispatch_generic_gui(0, "/dev/ttys005", probe_only=True)
+    assert raised == []
+    assert d._dispatch_generic_gui(0, "/dev/ttys005")
+    assert raised == ["/Applications/Ghostty.app"]
+
+
 # --- dispatch_bring_to_front: fallthrough order across targets ---------
 
 

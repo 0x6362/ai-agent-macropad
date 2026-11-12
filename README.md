@@ -3,8 +3,8 @@
 A daemon that mirrors the state of your AI coding agent sessions onto
 a physical keyboard — one key/LED slot per active session, color-coded
 by what that session is doing (working, waiting on you, done, errored,
-etc.) — pressing a key brings that session's window (Terminal, VS
-Code, or IntelliJ) to the front. The hardware, wire protocol, and
+etc.) — pressing a key focuses its Ghostty/tmux session, Emacs buffer,
+or supported terminal/editor window. The hardware, wire protocol, and
 daemon core are agent-agnostic; see [Agents tested](#agents-tested)
 below for which coding agents are actually wired up today.
 
@@ -18,8 +18,18 @@ V2)](#qmk-keyboard-nuphy-air75-v2) for the pattern to follow.
 A second QMK board, the [Keychron K0
 Max](https://www.keychron.com/products/keychron-k0-max-qmk-wireless-custom-number-pad)
 (RGB numpad), is wired up against Keychron's `2025q3` firmware source.
-It has been compiled, flashed, and HID-verified on a live RGB board —
-see [QMK keyboard (Keychron K0 Max)](#qmk-keyboard-keychron-k0-max).
+**This fork now includes verified 2.4 GHz wireless support for the
+Keychron K0 Max**, through its USB-A receiver, alongside USB-C.
+Session colors, bank/page controls, window focus, and request-bound
+agent-shell approval buttons have been exercised wirelessly on a live
+RGB board. See [QMK keyboard (Keychron K0 Max)](#qmk-keyboard-keychron-k0-max)
+for the custom firmware, build instructions, and transport details.
+
+[![Keychron K0 Max keymap and LED states: M1 Claude Code, M2 Codex CLI, M3 agent-shell, M4 paging, digits for sessions, shape-key app focus and approvals; USB-C and 2.4 GHz wireless support](docs/keychron-k0-max-guide.png)](docs/keychron-k0-max-guide.svg)
+
+The guide shows example colors; each numbered key follows its assigned
+session's state. Bound idle sessions are dim grey, while unassigned
+keys are dark. Click the graphic for the editable vector version.
 
 This repo covers the full path end to end: per-agent hook wiring (an
 example settings file, the adapter script it invokes, and a setup
@@ -41,7 +51,7 @@ The pad's hardware, HID protocol, and daemon core don't assume any
 particular agent — but wiring one up still means writing the piece
 that turns its own event stream into hook payloads on
 `~/.ai-agent-macropad/daemon.sock` (see [Protocol](#protocol) below).
-Four agents have that piece written so far:
+Four CLI agents and an Emacs agent-shell bridge have that piece written:
 
 | Agent                                          | Status     | Notes                                                                                 |
 | ----------------------------------------------- | ---------- | -------------------------------------------------------------------------------------- |
@@ -49,6 +59,7 @@ Four agents have that piece written so far:
 | [Codex CLI](https://developers.openai.com/codex) | ✅ Tested | Wired via Codex's own hooks (near-identical event vocabulary to Claude Code's), verified with a real `codex exec` run — see [codex/README.md](codex/README.md) |
 | [Cursor](https://cursor.com) CLI (`agent`)      | ✅ Tested | Wired via Cursor's own hooks — its event names are camelCase (`sessionStart`, `preToolUse`, ...), translated before forwarding; verified end to end against real interactive `agent` sessions and `agent -p` runs, with only MCP events left untested — see [cursor/README.md](cursor/README.md) for the full verification log and known gaps |
 | [Grok Build](https://docs.x.ai/build) (xAI)     | ✅ Tested | Wired via Grok Build's own hooks — payload shape diverges from Claude Code's/Codex's (camelCase fields, snake_case event values), translated before forwarding; verified with a real `grok -p ...` run — see [grok/README.md](grok/README.md) |
+| [Emacs agent-shell](emacs/README.md) | ✅ Tested | One slot per ACP session, exact buffer focus, and request-bound allow-once/deny buttons; supports Claude, Codex, and other Agent Shell backends in M3 |
 
 Update this table as support for other agents is added.
 
@@ -95,6 +106,8 @@ been tried.
 | ----------------------------------- | --------------------------------------------------------------------------------------------------------- |
 | `daemon.py`                         | Host-side daemon: Unix socket server + hook-event → pad-state mapping + idle-release orchestration        |
 | `pad_link.py`                       | Owns the HID connection to the pad: discovery, open/close, read/write, reconnection                       |
+| `session_banks.py`                  | Stable per-source session assignments, ten slots per page, and independent bank/page selection |
+| `codex_terminals.py`                | Matches live Codex tmux clients to read-only session metadata, independently of the shared backend's environment |
 | `hid_protocol.py`                   | Wire-level binary report format for the HID transport (QMK-based pads) — see [Protocol](#protocol)        |
 | `Makefile`                          | Repeatable QMK compile: stamps protocol version + QMK-fork/overlay git hashes into the `.bin` name (`make nuphy-air75-v2`, `make keychron-k0-max`) |
 | `fake_hooks.py`                     | Simulates an agent session's hook events (Claude Code by default, `--agent codex` for Codex's own event shape), for testing the daemon without real hooks wired up |
@@ -103,6 +116,8 @@ been tried.
 | `requirements.txt`                  | Python dependencies for the daemon                                                                        |
 | `requirements-dev.txt`              | Adds `pytest` on top of `requirements.txt`, for running the test suite                                    |
 | `tests/`                            | `pytest` suite for `daemon.py`, `pad_link.py`, and `hid_protocol.py` (see [Testing](#testing))             |
+| `emacs/`                           | Agent Shell bridge, setup guide, and ERT tests |
+| `docs/keychron-k0-max-guide.svg`     | Editable physical keymap and session/bank LED guide; PNG rendition embedded above |
 | `claude/README.md`                  | Setup guide for wiring up Claude Code hooks                                                                |
 | `claude/example_hook_settings.json` | `hooks` block to merge into Claude Code's `settings.json`, wiring every relevant event to `hook.sh`        |
 | `claude/hook.sh`                    | Reads a Claude Code hook payload from stdin, enriches it, tags it `agent: claude-code`, and forwards it to the daemon's socket |
@@ -242,105 +257,109 @@ HID protocol and `dispatch_bring_to_front` logic itself is shared code in
 
 #### QMK keyboard (Keychron K0 Max)
 
-Verified against a live RGB K0 Max: VID/PID (`0x3434`/`0x0A06`) match
-Keychron's `keyboards/keychron/k0_max/keyboard.json` on
-[`2025q3`](https://github.com/Keychron/qmk_firmware/tree/2025q3), the
-keymap compiles and flashes, and `hid_bringup_test.py` cycles the
-four top-row shape keys through every state. Daemon and hook wiring
-are the shared stack used by the Air75.
+The RGB K0 Max uses the digits **1–9, then 0** as ten session slots
+per page. Their LEDs show the session states listed above. Unassigned
+digits stay completely dark, including after bank/page changes and
+wireless reconnection. The other backlight animation is suppressed.
 
-RGB numpad with a left-hand macro column and a rotary encoder. 4 slots
-wired by default on the top-row shape keys (stock Esc / Del / Tab /
-Bksp — circle / triangle / square / X in the printed manual). Each
-shows one AI agent session's state via per-key RGB; pressing one
-brings that session's window to the front. **M5 stays `MO(FN)`**, same
-as stock, so Bluetooth pairing and lighting still work (M5+0 toggles
-RGB, M5+Num Lock cycles effects). Slot colors overlay whatever
-animation is running. M1–M4 stay stock macros; encoder rotate is
-volume; encoder click is mute. AI_AGENT_KEY_4..11 exist as valid
-keycodes and can be dragged onto spare keys in VIA; the board reports
-however many are on a key at the time, so adding one makes it 5. Each slot paints
-its own key's LED, the same as every other board here. Stock legends
-are not shine-through and the top-row LEDs face up with nothing above
-them, so the color reads as a glow around the keycap rather than
-through it — watch the shape keys from a shallow angle, or turn the
-RGB animation down, if they are hard to read.
+| Key | Action |
+| --- | --- |
+| M1 | Claude Code bank |
+| M2 | Codex CLI bank |
+| M3 | Emacs agent-shell bank |
+| M4 | Next page in the current bank; wraps after the last page |
+| M5 | Stock FN layer for wireless pairing and lighting |
+| Digit tap | Select and focus that session |
+| Digit hold, 5 seconds | Clear that session's pad assignment; the agent continues running |
+| Circle | Focus Emacs |
+| Triangle | Focus Ghostty |
+| Square | Allow the selected agent-shell session's pending tool request once |
+| X | Deny the selected agent-shell session's pending tool request |
 
-This board's firmware lives on Keychron's `2025q3` branch, in its own
-checkout separate from the Air75's. `2025q3` already defines a strong
-`via_command_kb()` in
-`keyboards/keychron/common/keychron_raw_hid.c`, so the keymap can't
-hook that symbol itself — apply the small patch below first, which
-adds a `raw_hid_receive_kb()` fallthrough the keymap can plug into.
+M1–M3 summarize their entire bank, including hidden pages: blinking
+orange means input is needed or a tool is stalled; steady amber means
+idle waiting. The selected bank has a white indicator when it has no
+attention state. M4 lights when the current bank has multiple pages.
+Each bank remembers its own page, and session positions remain stable
+when another session ends.
+
+M1 contains interactive Claude sessions with a live local terminal
+target. Background jobs, app-managed sessions without a terminal, and
+agent-shell backends do not occupy its keys. Agent Shell sessions live
+in M3. A bound but idle terminal session keeps its dim grey indicator;
+unbound digits are dark.
+
+Claude hooks report the tmux socket and pane together. For Codex's
+shared app-server, M2 binds live TUI panes to read-only local session
+metadata using an exact display-name/project match. It uses the default
+terminal title layout (activity, thread-name, project-name), requires a
+live Codex process on that TTY, and rejects missing or duplicate matches.
+It refreshes the binding on focus instead of trusting the backend's
+inherited tmux environment. Existing TUI sessions are seeded at startup;
+backend-only and agent-shell sessions do not occupy M2.
+
+A digit selects that pane, switches its attached local client to the session,
+and raises the terminal app, including Ghostty. Missing panes and
+ambiguous clients do not fall back to a similarly named editor window.
+With multiple windows in one terminal app, the app's front window is
+raised; exact terminal-window selection is not available through this
+generic macOS activation path.
+
+Changing bank or page clears the selected approval target. Square/X
+only act after a digit explicitly selected an agent-shell session,
+and only if its exact pending tool request is still present and
+unambiguous. They never choose “allow always.” Claude and Codex CLI
+keep their normal terminal approval prompts.
+
+Both USB-C and the USB-A 2.4 GHz receiver are supported. The daemon
+prefers a wired board when available and discovers the receiver as
+`3434:D030`; the custom hello handshake identifies the attached pad.
+Receiver writes are serialized with a 25 ms gap: the radio path drops
+raw-HID bursts otherwise, including LED clear updates. A complete bank
+redraw takes roughly a quarter second. Wired writes are not rate-limited.
+This firmware enables wireless raw-HID reception in Keychron's
+`2025q3` source and corrects its stale VIA receive-function call.
+
+Build against a separate Keychron checkout:
 
 ```
 git clone --depth 1 --branch 2025q3 https://github.com/Keychron/qmk_firmware.git ../keychron-qmk-firmware-2025q3
-cd ../keychron-qmk-firmware-2025q3 && git submodule update --init --recursive
-brew install qmk/qmk/qmk dfu-util
-# STM32L432: Homebrew's `arm-none-eabi-gcc` is missing newlib headers
-# (`stdint.h: No such file or directory`). Use ARM's toolchain instead:
-#   brew install --cask gcc-arm-embedded
-#   brew unlink arm-none-eabi-gcc   # if the Homebrew formula is already installed
-
+cd ../keychron-qmk-firmware-2025q3
+git submodule update --init --recursive
 git apply ../ai-agent-macropad/qmk-userspace/keyboards/keychron/k0_max/keychron_raw_hid.c.patch
+git apply ../ai-agent-macropad/qmk-userspace/keyboards/keychron/k0_max/wireless_raw_hid.patch
 
 cd ../ai-agent-macropad
 make keychron-k0-max
-# KEYCHRON_MAX_QMK=/path/to/keychron-qmk-firmware-2025q3 make keychron-k0-max
 ```
 
-This repo does not flash. Prefer `dfu-util` on this STM32L432 — the
-ROM DFU bootloader stalls WebUSB during erase (the browser flasher
-fails with `DFU_GETSTATUS failed: stall`). Enter bootloader in Cable
-mode: unplug, hold the reset button under the **0** key (not Esc —
-that key is no longer Bootmagic after this keymap), plug in USB-C,
-keep holding 3–5 seconds. `dfu-util -l` should list `0483:df11`
-(STM32 BOOTLOADER), not "Keychron K0 Max". Then:
+Requires QMK, `dfu-util`, and ARM's embedded toolchain. On macOS,
+Homebrew's `arm-none-eabi-gcc` formula may lack newlib headers; use
+ARM's complete toolchain, such as the `gcc-arm-embedded` cask.
+`KEYCHRON_MAX_QMK=/path/to/checkout make keychron-k0-max` overrides
+the checkout location.
+
+To flash, select Cable mode, unplug USB-C, hold the reset button
+under **0** while reconnecting, and hold for 3–5 seconds. Confirm
+`dfu-util -l` shows `0483:df11` (STM32 BOOTLOADER), then run:
 
 ```
-dfu-util -a 0 -d 0483:df11 -s 0x08000000:leave -t 1024 -D \
-  qmk-userspace/keychron_k0_max_ai_agent_macropad-p1-qmk_<hash>-overlay_<hash>.bin
+dfu-util -a 0 -d 0483:df11 -s 0x08000000:leave -t 1024 -D qmk-userspace/<built-image>.bin
 ```
 
-`-t 1024` works around the L432 bootloader reporting an erase poll
-timeout that is too short. Close the browser flasher tab first or
-`dfu-util` returns `LIBUSB_ERROR_ACCESS`. A hang on "Submitting leave
-request" after `Download done` is normal — the chip has already
-rebooted. See [Keychron's own
-readme](https://github.com/Keychron/qmk_firmware/blob/2025q3/keyboards/keychron/k0_max/readme.md)
-for the hardware reset location.
+Close any browser flasher first. `-t 1024` works around the L432 ROM
+bootloader's erase timing. If a flash is interrupted, the hardware
+reset button provides the same recovery path regardless of the
+installed keymap.
 
-Then verify the wire protocol directly —
-`python3 hid_bringup_test.py` — and only move on once the four
-top-row shape keys cycle through every state. Watch them from a
-shallow angle; their legends are not shine-through, so the color
-shows as a glow around the keycap rather than through it.
+VIA and the daemon share the raw-HID interface. End active sessions
+and wait five seconds, or stop the daemon, before opening VIA. Load
+[this board's VIA definition](qmk-userspace/keyboards/keychron/k0_max/keymaps/ai_agent_macropad/via.json)
+to access AI slot and bank keycodes. Shape actions use F13–F16,
+intercepted by this keymap instead of being typed.
 
-##### Troubleshooting (K0 Max)
-
-- **Factory reset / keys dead after a failed flash.** That reset lives
-  in app firmware. If erase died mid-page, hold the hardware reset
-  under 0 while plugging in (Cable mode, data cable, no hub) and
-  reflash with `dfu-util` as above. Do not click Try again in a stalled
-  browser DFU session.
-- **Rainbow drowning out slot colors.** Lighting is stock Keychron FN:
-  M5+0 toggles RGB (this also hides slot paints — the engine is off),
-  M5+Num Lock cycles effects, and the rest of the FN layer adjusts
-  brightness / hue / sat / speed. Turn brightness down or pick a
-  quieter effect if slots are hard to see.
-- **New keymap "didn't take".** VIA EEPROM from a previous flash can
-  keep stock Esc/Del/Tab/Bksp on the shape keys. Reset EEPROM in VIA
-  or re-assign those four keys to AI Slot 0–3.
-- **No raw HID / `hid_bringup_test.py` finds nothing.** Cable mode and
-  a USB-C *data* cable. Bluetooth and 2.4 GHz will not carry this
-  protocol.
-
-Slot wiring, VIA reassignment, and the VIA/daemon exclusivity rule are
-all the same as [the Air75 board above](#qmk-keyboard-nuphy-air75-v2).
-Load [this board's
-`via.json`](qmk-userspace/keyboards/keychron/k0_max/keymaps/ai_agent_macropad/via.json)
-in VIA's Design tab. The HID protocol must run over USB-C; Bluetooth
-and 2.4 GHz will not carry it.
+The firmware advertises bank support in its hello capabilities byte.
+Other boards keep the original single-page behavior.
 
 ### 2. Run the daemon
 
@@ -354,7 +373,7 @@ python3 daemon.py
 
 The daemon auto-detects the pad (`pad_link.discover_hid_pad()`),
 trying each board in `hid_protocol.KNOWN_HID_PADS` (NuPhy Air75 V2,
-Keychron K0 Max) in turn — sending each candidate raw-HID interface a
+Keychron K0 Max wired and 2.4 GHz) in turn — sending each candidate raw-HID interface a
 ping and attaching to whichever one answers hello first via
 `discover_hid_device()`. No need to look up device paths by hand or
 update them after a replug.
@@ -399,9 +418,9 @@ a previous daemon run that never shut down properly) doesn't linger
 forever; the pad has no way to know the old daemon process is gone, so
 nothing else would ever revisit that slot otherwise (see
 `Daemon.seed_existing_sessions()`, `discover_running_sessions()`, and
-`discover_running_grok_sessions()` in `daemon.py`). Codex has neither
-mechanism, so a pre-existing Codex session always falls back to the
-same lazy-allocation-on-first-hook-event behavior as everything else.
+`discover_running_grok_sessions()` in `daemon.py`). Banked pads also
+discover already-open Codex tmux TUIs through `codex_terminals.py`.
+Other boards allocate Codex sessions on their first hook event.
 
 ### 3. Try it without real hooks
 
@@ -444,6 +463,7 @@ gotchas confirmed during testing:
 - [Codex CLI](codex/README.md)
 - [Cursor CLI](cursor/README.md)
 - [Grok Build](grok/README.md)
+- [Emacs agent-shell](emacs/README.md)
 
 ## Testing
 
@@ -525,6 +545,7 @@ together](#how-it-fits-together)). Recognized fields:
 | `tool_name`         | Distinguishes attention-worthy tools (`AskUserQuestion`, `ExitPlanMode`) and labels the slot during `PreToolUse` |
 | `notification_type` | Distinguishes `Notification` subtypes (`agent_needs_input`, `idle_prompt`, `permission_prompt`, ...) — Claude Code and Grok Build only, see [Agents tested](#agents-tested) |
 | `tmux_pane`         | tmux pane id, for the "bring to front" key-press dispatch                                                        |
+| `tmux_socket`       | tmux server socket path; together with the pane ID identifies the exact terminal session                        |
 | `controlling_tty`   | Terminal.app/iTerm tty, for the same dispatch when not in tmux                                                   |
 
 `hook_event_name` maps to a display state roughly as:
@@ -667,10 +688,10 @@ pad now works end to end:
 - ✅ Slot allocation for concurrent sessions (any mix of agents)
 - ✅ Key-press → bring-window-to-front dispatch (macOS)
 - ✅ Hold a slot key 5s to manually clear a stale session mapping (e.g. a crashed session, or a duplicate VS Code window), freeing the slot for a new session
-- ✅ Startup seeding of already-running sessions — `claude agents --json` (Claude Code) or `~/.grok/active_sessions.json` (Grok Build); Codex has neither, see [Agents tested](#agents-tested)
+- ✅ Startup seeding — Claude/Grok registries, live Codex tmux TUIs on banked pads, and the Emacs agent-shell bridge
 - ✅ Idle-release: the pad connection closes when no session is active, freeing it for VIA
-- ✅ Keychron K0 Max QMK keymap — compiled, flashed, and HID-verified on a live RGB board
-  (`hid_bringup_test.py` cycles the top-row shape keys); see [QMK keyboard (Keychron K0
+- ✅ Keychron K0 Max QMK keymap — compiled, flashed, and HID-verified over USB-C and 2.4 GHz;
+  ten digit slots with source banks and paging; see [QMK keyboard (Keychron K0
   Max)](#qmk-keyboard-keychron-k0-max)
 
 ## Prior hardware: Adafruit MacroPad RP2040

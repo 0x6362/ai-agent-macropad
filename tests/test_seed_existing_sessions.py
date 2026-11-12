@@ -75,27 +75,27 @@ def test_controlling_tty_none_for_dead_pid(monkeypatch):
     assert daemon._controlling_tty(123) is None
 
 
-# --- _tmux_pane_for_tty ------------------------------------------------------
+# --- _tmux_target_for_tty ------------------------------------------------------
 
 
-def test_tmux_pane_for_tty_matches(monkeypatch):
+def test_tmux_target_for_tty_matches(monkeypatch):
     monkeypatch.setattr(
         daemon.subprocess, "run",
-        fake_run(stdout="/dev/ttys001 %3\n/dev/ttys003 %7\n"),
+        fake_run(stdout="/dev/ttys001\t/tmp/server\t%3\n/dev/ttys003\t/tmp/server\t%7\n"),
     )
-    assert daemon._tmux_pane_for_tty("/dev/ttys003") == "%7"
+    assert daemon._tmux_target_for_tty("/dev/ttys003") == daemon.TmuxTarget("/tmp/server", "%7")
 
 
-def test_tmux_pane_for_tty_no_match(monkeypatch):
-    monkeypatch.setattr(daemon.subprocess, "run", fake_run(stdout="/dev/ttys001 %3\n"))
-    assert daemon._tmux_pane_for_tty("/dev/ttys099") is None
+def test_tmux_target_for_tty_no_match(monkeypatch):
+    monkeypatch.setattr(daemon.subprocess, "run", fake_run(stdout="/dev/ttys001\t/tmp/server\t%3\n"))
+    assert daemon._tmux_target_for_tty("/dev/ttys099") is None
 
 
-def test_tmux_pane_for_tty_no_tmux_on_path(monkeypatch):
+def test_tmux_target_for_tty_no_tmux_on_path(monkeypatch):
     monkeypatch.setattr(
         daemon.subprocess, "run", fake_run(raise_exc=FileNotFoundError())
     )
-    assert daemon._tmux_pane_for_tty("/dev/ttys001") is None
+    assert daemon._tmux_target_for_tty("/dev/ttys001") is None
 
 
 # --- discover_running_grok_sessions -----------------------------------------
@@ -205,12 +205,13 @@ def test_seed_existing_sessions_backfills_tty_and_tmux_pane(recording_daemon, mo
     )
     monkeypatch.setattr(daemon, "discover_running_grok_sessions", lambda: [])
     monkeypatch.setattr(daemon, "_controlling_tty", lambda pid: "/dev/ttys003")
-    monkeypatch.setattr(daemon, "_tmux_pane_for_tty", lambda tty: "%7")
+    monkeypatch.setattr(daemon, "_tmux_target_for_tty", lambda tty: daemon.TmuxTarget("/tmp/server", "%7"))
 
     d.seed_existing_sessions()
 
     assert d.session_ttys["s1"] == "/dev/ttys003"
     assert d.session_panes["s1"] == "%7"
+    assert d.session_tmux["s1"] == daemon.TmuxTarget("/tmp/server", "%7")
 
 
 def test_seed_existing_sessions_no_pad_target_when_tty_unknown(recording_daemon, monkeypatch):
@@ -226,7 +227,7 @@ def test_seed_existing_sessions_no_pad_target_when_tty_unknown(recording_daemon,
     monkeypatch.setattr(daemon, "discover_running_grok_sessions", lambda: [])
     monkeypatch.setattr(daemon, "_controlling_tty", lambda pid: None)
     monkeypatch.setattr(
-        daemon, "_tmux_pane_for_tty",
+        daemon, "_tmux_target_for_tty",
         lambda tty: (_ for _ in ()).throw(AssertionError("should not be called")),
     )
 

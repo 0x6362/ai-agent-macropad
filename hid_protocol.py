@@ -15,7 +15,7 @@ Report layout (REPORT_SIZE bytes, unused trailing bytes zero-padded):
     byte 1: message-specific
     byte 2: message-specific
     byte 3: message-specific (MSG_HELLO: protocol version)
-    byte 4..: unused, reserved
+    remaining bytes: message-specific, zero-padded
 
 MSG_PING   (host -> device): byte 1 = PROTOCOL_VERSION. Requests a
             MSG_HELLO reply — necessary because raw HID is
@@ -23,7 +23,7 @@ MSG_PING   (host -> device): byte 1 = PROTOCOL_VERSION. Requests a
             after receiving an OUT report from the host, it can't
             push "hello" unprompted the moment it's plugged in.
 MSG_HELLO  (device -> host): byte 1 = device id, byte 2 = num_slots,
-            byte 3 = PROTOCOL_VERSION.
+            byte 3 = PROTOCOL_VERSION, byte 4 = optional capability flags.
 MSG_SLOT   (host -> device): byte 1 = slot index, byte 2 = state
             (see STATE_*). A cleared slot is just MSG_SLOT with
             STATE_OFF — the firmware's handle_message() equivalent
@@ -46,6 +46,14 @@ MSG_KEY_HELD (device -> host): byte 1 = slot index. Sent the instant
             never reaches the threshold, so it only ever produces a
             MSG_KEY and nothing else. Used to manually clear a slot's
             session mapping (see Daemon._evict_slot()).
+MSG_SELECT_BANK (device -> host): byte 1 = source bank (0..2).
+MSG_NEXT_PAGE (device -> host): no payload; advance the current bank's page.
+MSG_BANK_STATE (host -> device): bytes 1..3 = bank, page, page count;
+            bytes 4..6 = attention per bank; bytes 7..10 = uint32 LE
+            permission token for the selected session/request.
+MSG_FOCUS_APP (device -> host): byte 1 = app index (Emacs, Ghostty).
+MSG_PERMISSION_DECISION (device -> host): byte 1 = allow (1) / deny (0);
+            bytes 2..5 echo the uint32 LE permission token.
 """
 
 from collections import namedtuple
@@ -72,6 +80,13 @@ MSG_SLOT = 0x20
 MSG_PING = 0x21
 MSG_KEY = 0x22
 MSG_KEY_HELD = 0x23
+MSG_SELECT_BANK = 0x24
+MSG_NEXT_PAGE = 0x25
+MSG_BANK_STATE = 0x26
+MSG_FOCUS_APP = 0x27
+MSG_PERMISSION_DECISION = 0x28
+CAP_SESSION_BANKS = 0x01
+CAP_PERMISSION_TOKEN = 0x02
 
 # Sent on both MSG_PING (byte 1) and MSG_HELLO (byte 3). Must match
 # AI_AGENT_MACROPAD_PROTOCOL_VERSION in
@@ -136,11 +151,12 @@ KnownPad = namedtuple("KnownPad", ["name", "vid", "pid", "device_id"])
 
 NUPHY_AIR75_V2 = KnownPad("NuPhy Air75 V2 (ANSI)", 0x19F5, 0x3246, DEVICE_ID_AIR75_V2)
 KEYCHRON_K0_MAX = KnownPad("Keychron K0 Max", 0x3434, 0x0A06, DEVICE_ID_K0_MAX)
+KEYCHRON_K0_MAX_WIRELESS = KnownPad("Keychron K0 Max (2.4 GHz)", 0x3434, 0xD030, DEVICE_ID_K0_MAX)
 
 # Tried in this order by daemon.py's discover_hid_pad() — add a new
 # KnownPad here for any future board rather than hardcoding its VID/PID
 # somewhere else.
-KNOWN_HID_PADS = (NUPHY_AIR75_V2, KEYCHRON_K0_MAX)
+KNOWN_HID_PADS = (NUPHY_AIR75_V2, KEYCHRON_K0_MAX, KEYCHRON_K0_MAX_WIRELESS)
 
 
 def pack_ping():
@@ -151,6 +167,15 @@ def pack_ping():
     report[0] = MSG_PING
     report[1] = PROTOCOL_VERSION
     return bytes(report)
+
+
+def pack_bank_state(bank, page, pages, attention, permission_token=0):
+    if not 0 <= bank < 3 or not 0 <= page <= 255 or not 1 <= pages <= 255:
+        raise ValueError("invalid bank view")
+    if len(attention) != 3 or any(value not in (0, 1, 2) for value in attention):
+        raise ValueError("invalid bank attention states")
+    return (bytes([MSG_BANK_STATE, bank, page, pages, *attention])
+            + permission_token.to_bytes(4, "little")).ljust(REPORT_SIZE, b"\0")
 
 
 def pack_slot(index, state):
@@ -186,12 +211,24 @@ def parse_report(report):
     if msg_type == MSG_HELLO:
         if len(report) < 4:
             return None
-        return {
+        message = {
             "t": "hello",
             "device": report[1],
             "slots": report[2],
             "protocol": report[3],
         }
+        if len(report) > 4 and report[4]:
+            message["capabilities"] = report[4]
+        return message
+    if msg_type == MSG_SELECT_BANK and len(report) >= 2:
+        return {"t": "select_bank", "bank": report[1]}
+    if msg_type == MSG_NEXT_PAGE:
+        return {"t": "next_page"}
+    if msg_type == MSG_FOCUS_APP and len(report) >= 2:
+        return {"t": "focus_app", "app": report[1]}
+    if msg_type == MSG_PERMISSION_DECISION and len(report) >= 6 and report[1] in (0, 1):
+        return {"t": "permission_decision", "allow": bool(report[1]),
+                "token": int.from_bytes(report[2:6], "little")}
     if msg_type == MSG_KEY:
         if len(report) < 2:
             return None

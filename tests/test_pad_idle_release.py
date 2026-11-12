@@ -23,6 +23,9 @@ class FakePad:
         self.close_calls += 1
         self.attached = False
 
+    def handshake(self):
+        return None
+
     def write_json(self, msg):
         self.written.append(msg)
 

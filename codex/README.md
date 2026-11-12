@@ -48,6 +48,15 @@ docstring](../daemon.py) for what that means for pad states.
    only do this for hook sources you already trust (i.e. `codex/hook.sh`
    as shipped in this repo, not an arbitrary command).
 
+On the banked K0, session focus comes from the live terminal client.
+Shared app-server hooks can inherit an unrelated tmux socket/pane, so
+the daemon ignores those hook fields for M2. It matches the exact saved
+display name and project against the default Codex terminal title,
+requires a live Codex process on that TTY, and refreshes the socket/pane
+on focus. Duplicate or missing identities do not select another terminal.
+Custom terminal-title layouts may not match. Open terminal sessions are
+also discovered at daemon startup; agent-shell sessions remain in M3.
+
 Known gaps versus Claude Code (see [`hook_to_state`'s docstring](../daemon.py)
 for the full reasoning): Codex has no `PostToolUseFailure`
 event, so a failed Codex tool call still reports as a normal

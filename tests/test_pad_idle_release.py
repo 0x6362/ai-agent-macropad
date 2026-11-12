@@ -1,4 +1,7 @@
 import asyncio
+import signal
+
+import pytest
 
 import daemon
 
@@ -11,6 +14,7 @@ class FakePad:
 
     def __init__(self, attached=False):
         self.attached = attached
+        self.running = attached
         self.open_calls = 0
         self.close_calls = 0
         self.written = []
@@ -18,16 +22,40 @@ class FakePad:
     def open(self):
         self.open_calls += 1
         self.attached = True
+        self.running = True
 
     def close(self):
         self.close_calls += 1
         self.attached = False
+        self.running = False
 
     def handshake(self):
         return None
 
     def write_json(self, msg):
         self.written.append(msg)
+
+
+def test_shutdown_unwinds_session_handling_before_waiting_for_pad_worker(monkeypatch):
+    calls = []
+    handlers = {}
+
+    class FakeDaemon:
+        pad = type("Pad", (), {"close": lambda self: calls.append("pad_closed")})()
+
+        async def serve(self):
+            try:
+                handlers[signal.SIGTERM]()
+            finally:
+                calls.append("handling_unwound")
+
+    monkeypatch.setattr(daemon, "Daemon", FakeDaemon)
+    monkeypatch.setattr(signal, "signal", lambda signum, handler: handlers.__setitem__(signum, handler))
+
+    with pytest.raises(SystemExit):
+        daemon.main()
+
+    assert calls == ["handling_unwound", "pad_closed"]
 
 
 def test_reconcile_opens_pad_when_a_session_is_active():
@@ -58,6 +86,28 @@ def test_reconcile_is_a_noop_when_state_already_matches():
     asyncio.run(d._reconcile_pad())
     assert d.pad.open_calls == 0
     assert d.pad.close_calls == 0
+
+
+def test_last_session_ending_stops_disconnected_recovery_worker():
+    d = daemon.Daemon()
+    d.pad = FakePad(attached=False)
+    d.pad.running = True
+
+    asyncio.run(d._reconcile_pad())
+
+    assert d.pad.close_calls == 1
+    assert not d.pad.running
+
+
+def test_session_event_during_recovery_does_not_start_another_worker():
+    d = daemon.Daemon()
+    d.pad = FakePad(attached=False)
+    d.pad.running = True
+    d.slots.allocate("s1")
+
+    asyncio.run(d._reconcile_pad())
+
+    assert d.pad.open_calls == 0
 
 
 def test_delayed_close_is_a_noop_if_a_session_is_active_by_the_time_it_runs():
@@ -115,7 +165,10 @@ def test_reconcile_resyncs_cached_slot_state_when_reopening():
     asyncio.run(d._reconcile_pad())
 
     assert d.pad.attached is True
-    assert d.pad.written == [{"t": "slot", "i": 0, "state": "idle", "label": "s1"}]
+    assert d.pad.written == [
+        {"t": "slot", "i": 0, "state": "idle", "label": "s1"},
+        *({"t": "clear", "i": i} for i in range(1, d.slots.num_slots)),
+    ]
 
 
 def test_reconcile_does_not_resync_when_pad_fails_to_attach():

@@ -18,6 +18,7 @@ are written to be safe across multiple cycles on the same instance —
 see the comments inline on the specific state each one resets.
 """
 import logging
+from dataclasses import dataclass
 import threading
 import time
 
@@ -38,6 +39,34 @@ RAW_USAGE_PAGE = 0xFF60
 RAW_USAGE_ID = 0x61
 
 
+@dataclass(frozen=True)
+class Ready:
+    probe_at: float
+
+
+@dataclass(frozen=True)
+class AwaitingHello:
+    deadline: float
+
+
+@dataclass(frozen=True)
+class Unresponsive:
+    pass
+
+
+LinkHealth = Ready | AwaitingHello | Unresponsive
+
+
+def advance_health(health: LinkHealth, now: float, timeout: float) -> LinkHealth:
+    match health:
+        case Ready(probe_at) if now >= probe_at:
+            return AwaitingHello(now + timeout)
+        case AwaitingHello(deadline) if now >= deadline:
+            return Unresponsive()
+        case _:
+            return health
+
+
 def discover_hid_device(vid, pid, handshake_timeout=1.5):
     """Find a QMK pad's raw-HID interface path without assuming it's
     the only HID interface the board exposes. A QMK keyboard enumerates
@@ -53,10 +82,14 @@ def discover_hid_device(vid, pid, handshake_timeout=1.5):
     """
     if hid is None:
         return None
-    candidates = [
-        d for d in hid.enumerate(vid, pid)
-        if d["usage_page"] == RAW_USAGE_PAGE and d["usage"] == RAW_USAGE_ID
-    ]
+    try:
+        candidates = [
+            d for d in hid.enumerate(vid, pid)
+            if d["usage_page"] == RAW_USAGE_PAGE and d["usage"] == RAW_USAGE_ID
+        ]
+    except hid.HIDException:
+        log.warning("HID enumeration failed vid=0x%04x pid=0x%04x", vid, pid, exc_info=True)
+        return None
     log.info(
         "HID discovery: %d raw-HID interface(s) matching vid=0x%04x pid=0x%04x",
         len(candidates), vid, pid,
@@ -89,7 +122,10 @@ def discover_hid_device(vid, pid, handshake_timeout=1.5):
         except hid.HIDException as e:
             log.info("HID discovery: %r failed during handshake: %s", path, e)
         finally:
-            dev.close()
+            try:
+                dev.close()
+            except hid.HIDException:
+                log.warning("HID probe close failed path=%r", path, exc_info=True)
 
     log.info("HID discovery: no interface answered hello within %ss", handshake_timeout)
     return None
@@ -144,6 +180,8 @@ class HidPadLink:
     # class attribute (not a literal in _reconnect()) so tests can
     # shrink it instead of eating this delay for real.
     RECONNECT_POLL_SECONDS = 2
+    HEARTBEAT_INTERVAL_SECONDS = 5
+    HEARTBEAT_TIMEOUT_SECONDS = 1.5
     # The K0 receiver drops raw-HID bursts; 25 ms keeps slot and bank
     # updates within its forwarding capacity, including clear reports.
     WIRELESS_WRITE_INTERVAL = 0.025
@@ -151,10 +189,8 @@ class HidPadLink:
     def __init__(self, on_device_event, vid=None, pid=None, on_reattach=None):
         self.on_device_event = on_device_event
         self.attached = False
-        # Fired after a read loop that lost the connection (real
-        # HIDException, not a plain read timeout — see _reconnect())
-        # re-establishes it. Lets Daemon replay per-slot state the pad
-        # missed while it was asleep/disconnected.
+        # Replays display state on reconnection and periodic hello
+        # confirmations, including sleeps shorter than a probe interval.
         self.on_reattach = on_reattach or (lambda: None)
         # Correlates a pending handshake() call with the "hello" reply
         # its ping eventually produces, without racing the background
@@ -164,6 +200,8 @@ class HidPadLink:
         self._last_hello = None
         self._write_lock = threading.Lock()
         self._last_write_at = None
+        self._health: LinkHealth = Unresponsive()
+        self._io_failed = threading.Event()
 
         # An explicit vid/pid pins discovery to just that one (unnamed)
         # board; otherwise try every board this module knows about (see
@@ -181,13 +219,24 @@ class HidPadLink:
         self._stop = threading.Event()
         self._thread = None
 
+    @property
+    def running(self):
+        """Whether a worker owns attachment or is trying to recover it."""
+        return self._thread is not None and self._thread.is_alive()
+
     def open(self):
+        if self.running:
+            return
         # Undo close()'s permanent-looking stop signal from a prior
         # cycle on this same instance — without this, a reader thread
         # started below would see _stop already set and exit
         # immediately, leaving attached=True but nothing actually
         # reading device->host reports.
         self._stop.clear()
+        self._io_failed.clear()
+        self._hello_event.clear()
+        self._last_hello = None
+        self._health = Unresponsive()
 
         if hid is None:
             log.warning(
@@ -199,28 +248,30 @@ class HidPadLink:
         if not found:
             log.warning(
                 "no known HID pad found (tried: %s) — running headless "
-                "(plug in the pad, or check back once a session starts)",
+                "(will keep checking until the connection is closed)",
                 ", ".join("%s (0x%04x/0x%04x)" % (p.name or "unnamed", p.vid, p.pid) for p in self.candidates),
             )
-            return
-        path, pad = found
-        self.vid, self.pid = pad.vid, pad.pid
-        try:
-            self._dev = hid.Device(path=path)
-        except hid.HIDException:
-            log.exception("failed to open HID device at %r", path)
-            return
-        self.attached = True
+        else:
+            path, pad = found
+            self.vid, self.pid = pad.vid, pad.pid
+            try:
+                self._dev = hid.Device(path=path)
+            except hid.HIDException:
+                log.exception("failed to open HID device at %r", path)
+            else:
+                self.attached = True
+                self._health = Ready(time.monotonic() + self.HEARTBEAT_INTERVAL_SECONDS)
+                log.info("attached to pad over HID (path=%r)", path)
         self._thread = threading.Thread(target=self._read_loop, daemon=True)
         self._thread.start()
-        log.info("attached to pad over HID (path=%r)", path)
 
     def close(self):
         self._stop.set()
         if self._thread:
-            self._thread.join(timeout=1)
-        if self._dev:
-            self._dev.close()
+            # Discovery can outlast one read timeout. It must finish
+            # before open() may clear the stop signal for another run.
+            self._thread.join()
+        self._close_device()
         # Reset every bit of state open() depends on being fresh — a
         # caller that checks .attached right after close() (e.g.
         # Daemon._reconcile_pad()) needs an accurate answer, and a
@@ -229,6 +280,18 @@ class HidPadLink:
         self.attached = False
         self._dev = None
         self._thread = None
+        self._health = Unresponsive()
+
+    def _close_device(self):
+        with self._write_lock:
+            device, self._dev = self._dev, None
+            self.attached = False
+            self._last_write_at = None
+            if device is not None:
+                try:
+                    device.close()
+                except hid.HIDException:
+                    log.warning("HID close failed", exc_info=True)
 
     def write_json(self, obj):
         report = _pack_for_hid(obj)
@@ -242,6 +305,7 @@ class HidPadLink:
             self._write_report(report)
         except hid.HIDException:
             log.exception("HID write failed")
+            self._io_failed.set()
 
     def _send_ping(self):
         if self._dev is None:
@@ -250,6 +314,7 @@ class HidPadLink:
             self._write_report(hid_protocol.pack_ping())
         except hid.HIDException:
             log.exception("HID write failed (handshake ping)")
+            self._io_failed.set()
 
     def _write_report(self, report):
         with self._write_lock:
@@ -271,10 +336,14 @@ class HidPadLink:
         thread does both jobs, so there's no separate blocking read to
         race against it.
         """
+        replay = msg.get("t") == "hello" and isinstance(self._health, AwaitingHello)
         if msg.get("t") == "hello":
+            self._health = Ready(time.monotonic() + self.HEARTBEAT_INTERVAL_SECONDS)
             self._last_hello = msg
             self._hello_event.set()
         self.on_device_event(msg)
+        if replay:
+            self.on_reattach()
 
     def handshake(self, timeout=1.5):
         """Ask the device how many slots it has: pings and waits up to
@@ -303,27 +372,32 @@ class HidPadLink:
 
     def _read_loop(self):
         while not self._stop.is_set():
+            if self._dev is None or self._io_failed.is_set():
+                self._health = Unresponsive()
+                self._reconnect()
+                continue
             try:
                 data = self._dev.read(hid_protocol.REPORT_SIZE, timeout=200)
             except hid.HIDException:
-                # Unlike a plain read timeout (which just returns b""
-                # and falls through below), HIDException means the
-                # OS-level handle itself died — the realistic cause is
-                # a wireless keyboard's BT link dropping while asleep,
-                # not mere firmware quiet. Retrying read() on the same
-                # self._dev can't recover from that; only rediscovering
-                # and reopening can.
                 log.warning("HID read failed — pad asleep/disconnected, reconnecting")
-                self.attached = False
-                self._reconnect()
+                self._io_failed.set()
                 continue
-            if not data:
-                continue
-            msg = hid_protocol.parse_report(bytes(data))
-            if msg is None:
-                log.warning("unrecognized HID report: %r", bytes(data))
-                continue
-            self._dispatch(msg)
+            if self._stop.is_set():
+                break
+            if data:
+                msg = hid_protocol.parse_report(bytes(data))
+                if msg is None:
+                    log.warning("unrecognized HID report: %r", bytes(data))
+                else:
+                    self._dispatch(msg)
+            health = advance_health(self._health, time.monotonic(), self.HEARTBEAT_TIMEOUT_SECONDS)
+            if health != self._health:
+                self._health = health
+                if isinstance(health, AwaitingHello):
+                    self._send_ping()
+                else:
+                    log.warning("pad hello timed out — receiver may be connected while pad sleeps; reconnecting")
+                    self._io_failed.set()
 
     def _reconnect(self):
         """Block (without spinning) until the pad reappears over HID
@@ -332,24 +406,29 @@ class HidPadLink:
         reopening the old path directly, since it may no longer be
         valid after the underlying handle died.
         """
-        if self._dev:
-            try:
-                self._dev.close()
-            except hid.HIDException:
-                pass
-            self._dev = None  # write_json()/_send_ping() already no-op on None
+        self._close_device()
+        self._io_failed.clear()
         while not self._stop.is_set():
             found = discover_hid_pad(self.candidates)
+            if self._stop.is_set():
+                return
             if found:
                 path, pad = found
                 self.vid, self.pid = pad.vid, pad.pid
                 try:
-                    self._dev = hid.Device(path=path)
+                    device = hid.Device(path=path)
+                except hid.HIDException:
+                    log.warning("HID reopen failed path=%r", path, exc_info=True)
+                else:
+                    with self._write_lock:
+                        self._dev = device
+                    if self._stop.is_set():
+                        self._close_device()
+                        return
                     self.attached = True
+                    self._health = Ready(time.monotonic() + self.HEARTBEAT_INTERVAL_SECONDS)
                     log.info("pad reattached over HID (path=%r)", path)
                     self.on_reattach()
                     self._send_ping()
                     return
-                except hid.HIDException:
-                    pass
             self._stop.wait(self.RECONNECT_POLL_SECONDS)

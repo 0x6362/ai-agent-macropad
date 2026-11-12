@@ -397,6 +397,16 @@ finding no pad at all) if either is missing.
 If no pad is found, the daemon still runs — it just logs what it
 _would_ send instead of writing to the device. This lets you develop
 against the socket/slot-mapping logic without any hardware plugged in.
+While sessions are active, it keeps retrying discovery, so a pad that
+was asleep or disconnected can appear without another session event.
+
+While connected, the daemon checks for a hello reply every five seconds.
+A successful check refreshes the current bank/page, session colors,
+and empty keys. This also restores updates missed during a short wireless
+sleep even when the USB receiver stayed connected. A missing reply
+(1.5-second timeout), read error, or write error triggers rediscovery and
+reopening of the HID handle. Recovery preserves session assignments;
+neither keypad sleep nor Mac sleep requires restarting the daemon.
 
 The daemon only holds the pad connection open while at least one
 agent session is active (`Daemon._reconcile_pad()` in

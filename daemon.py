@@ -754,31 +754,29 @@ class Daemon:
         with self._display_lock:
             if not isinstance(self.slots, SessionBanks):
                 return
+            view_changed = self._display_view != self.slots.view
             self._display_view = self.slots.view
             self._send_bank_state()
             for physical, session_id in enumerate(self.slots.slot_to_session):
                 address = self.slots.slot_for(session_id)
                 message = self.pad_state.get(address)
                 self.pad.write_json({**message, "i": physical} if message else {"t": "clear", "i": physical})
-            log.info("display bank=%s page=%d/%d", self.slots.selected_source,
-                     self.slots.view[1] + 1, self.slots.page_count())
+            if view_changed:
+                log.info("display bank=%s page=%d/%d", self.slots.selected_source,
+                         self.slots.view[1] + 1, self.slots.page_count())
 
     def resync_pad(self):
-        """Replays every slot's last-known state after the transport
-        reattaches (see HidPadLink._reconnect, or a deliberate
-        idle-close/reopen cycle via _reconcile_pad() below) — the pad
-        has no memory of what it missed while it was gone, so without
-        this it'd come back showing whatever it last displayed before
-        going quiet. Runs on the transport's background reconnect
-        thread; snapshot the values first since _send_pad() can mutate
-        pad_state concurrently from the connection-handling side.
+        """Restore occupied and empty slots after reconnection or a
+        periodic hello confirmation. The display lock keeps updates
+        from hook handling consistent with the transport's replay.
         """
-        log.info("pad reattached — resyncing %d slot(s)", len(self.pad_state))
+        log.debug("pad reachable — resyncing %d slot(s)", len(self.pad_state))
         if isinstance(self.slots, SessionBanks):
             self._refresh_display()
             return
-        for msg in list(self.pad_state.values()):
-            self.pad.write_json(msg)
+        with self._display_lock:
+            for i in range(self.slots.num_slots):
+                self.pad.write_json(self.pad_state.get(i, {"t": "clear", "i": i}))
 
     async def _reconcile_pad(self, delay=0):
         """Opens or closes the pad connection to match whether any
@@ -811,12 +809,12 @@ class Daemon:
             await asyncio.sleep(delay)
         async with self._pad_lock:
             want_open = len(self.slots.session_to_slot) > 0
-            if want_open and not self.pad.attached:
+            if want_open and not self.pad.running:
                 await asyncio.to_thread(self.pad.open)
                 if self.pad.attached:
                     await asyncio.to_thread(self.pad.handshake)
                     self.resync_pad()
-            elif not want_open and self.pad.attached:
+            elif not want_open and self.pad.running:
                 await asyncio.to_thread(self.pad.close)
 
     def _kick_reconcile(self, delay=0):
@@ -2189,13 +2187,15 @@ def main():
     daemon = Daemon()
 
     def shutdown(*_):
-        daemon.pad.close()
         sys.exit(0)
 
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)
 
-    asyncio.run(daemon.serve())
+    try:
+        asyncio.run(daemon.serve())
+    finally:
+        daemon.pad.close()
 
 
 if __name__ == "__main__":

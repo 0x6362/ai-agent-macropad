@@ -183,14 +183,20 @@ def test_hidpadlink_open_headless_when_hid_unavailable(monkeypatch):
     monkeypatch.setattr(pad_link, "hid", None)
     link = pad_link.HidPadLink(lambda msg: None)
     link.open()
-    assert link.attached is False
+    try:
+        assert link.attached is False
+    finally:
+        link.close()
 
 
 def test_hidpadlink_open_headless_when_nothing_found(monkeypatch):
     monkeypatch.setattr(pad_link, "hid", make_fake_hid([]))
     link = pad_link.HidPadLink(lambda msg: None)
     link.open()
-    assert link.attached is False
+    try:
+        assert link.attached is False
+    finally:
+        link.close()
 
 
 def test_hidpadlink_open_attaches_and_closes_cleanly(monkeypatch):

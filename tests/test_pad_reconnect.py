@@ -45,12 +45,13 @@ def test_resync_pad_replays_every_cached_slot(recording_daemon):
 
     d.resync_pad()
 
-    assert len(sent) == 2
+    assert len(sent) == d.slots.num_slots
     assert {"t": "slot", "i": 0, "state": "idle", "label": "a"} in sent
     assert {"t": "slot", "i": 1, "state": "working", "label": "b"} in sent
+    assert sent[2:] == [{"t": "clear", "i": i} for i in range(2, d.slots.num_slots)]
 
 
-def test_resync_pad_skips_freed_slots(recording_daemon):
+def test_resync_pad_clears_freed_slots(recording_daemon):
     d, sent = recording_daemon
     d._send_pad({"t": "slot", "i": 0, "state": "idle", "label": "a"})
     d._send_pad({"t": "clear", "i": 0})
@@ -58,7 +59,7 @@ def test_resync_pad_skips_freed_slots(recording_daemon):
 
     d.resync_pad()
 
-    assert sent == []
+    assert sent == [{"t": "clear", "i": i} for i in range(d.slots.num_slots)]
 
 
 def test_daemon_wires_resync_pad_as_transport_on_reattach():

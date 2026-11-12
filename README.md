@@ -283,6 +283,17 @@ attention state. M4 lights when the current bank has multiple pages.
 Each bank remembers its own page, and session positions remain stable
 when another session ends.
 
+Confirmed session closures free their assignments immediately on
+`SessionEnd`, or within about five seconds when detected by the daemon's
+terminal/buffer watcher. Existing sessions keep their numbered keys;
+new sessions take the first empty slot, including holes on earlier pages.
+For example, closing **2: B** leaves **1: A** and **3: C** in place; the
+next session gets **2**. Empty trailing pages disappear automatically.
+Failed discovery, an unresponsive Emacs server, or ambiguous Codex titles
+keep the assignment until closure can be confirmed. These positions stay
+stable within a daemon run; a restart discovers and assigns live sessions
+again rather than restoring a saved layout.
+
 M1 contains interactive Claude sessions with a live local terminal
 target. Background jobs, app-managed sessions without a terminal, and
 agent-shell backends do not occupy its keys. Agent Shell sessions live

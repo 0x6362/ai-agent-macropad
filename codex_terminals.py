@@ -69,7 +69,7 @@ def _run(command):
     """Read process/tmux metadata without starting sessions or changing focus."""
     try:
         result = subprocess.run(command, capture_output=True, text=True, timeout=2)
-    except (FileNotFoundError, subprocess.TimeoutExpired):
+    except (OSError, subprocess.TimeoutExpired):
         return ""
     return result.stdout if result.returncode == 0 else ""
 
@@ -88,7 +88,11 @@ def _codex_processes():
 
 def _tmux_panes():
     directory = Path(os.environ.get("TMUX_TMPDIR", "/tmp")) / f"tmux-{os.getuid()}"
-    sockets = {path.resolve() for path in directory.iterdir() if path.is_socket()} if directory.is_dir() else set()
+    try:
+        sockets = {path.resolve() for path in directory.iterdir() if path.is_socket()} if directory.is_dir() else set()
+    except OSError as error:
+        log.info("tmux socket discovery unavailable: %s", error)
+        sockets = set()
     inherited = os.environ.get("TMUX", "").split(",", 1)[0]
     if inherited:
         sockets.add(Path(inherited).resolve())

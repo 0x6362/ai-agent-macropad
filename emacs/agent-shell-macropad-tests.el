@@ -55,6 +55,20 @@
                                      ('busy "UserPromptSubmit")
                                      ('blocked "PermissionRequest")) nil))))))))
 
+(ert-deftest agent-shell-macropad-session-snapshot-is-read-only ()
+  (with-temp-buffer
+    (setq-local agent-shell-macropad--session-id "agent-shell:one")
+    (let ((buffer (current-buffer)))
+      (cl-letf (((symbol-function 'agent-shell-buffers) (lambda () (list buffer)))
+                ((symbol-function 'agent-shell-macropad--send)
+                 (lambda (&rest _) (ert-fail "Snapshot must not emit state changes"))))
+        (should (equal (agent-shell-macropad-session-ids) ["agent-shell:one"]))
+        (should (eq buffer (current-buffer)))))))
+
+(ert-deftest agent-shell-macropad-empty-snapshot-is-a-vector ()
+  (cl-letf (((symbol-function 'agent-shell-buffers) (lambda () nil)))
+    (should (equal (json-encode (agent-shell-macropad-session-ids)) "[]"))))
+
 (ert-deftest agent-shell-macropad-tool-updates-deduplicate-and-keep-other-tools-active ()
   (agent-shell-macropad-test--session
     (dolist (data '(((:tool-call-id . "a") (:tool-call . ((:status . "in_progress"))))

@@ -118,6 +118,13 @@ Socket failures leave the agent session running normally."
         ('blocked (agent-shell-macropad--send "PermissionRequest"))
         ('busy (agent-shell-macropad--send "UserPromptSubmit"))))))
 
+(defun agent-shell-macropad-session-ids ()
+  "Return open bridge session identities without changing focus or status."
+  (vconcat
+   (delq nil (mapcar (lambda (buffer)
+                      (buffer-local-value 'agent-shell-macropad--session-id buffer))
+                    (agent-shell-buffers)))))
+
 (defun agent-shell-macropad-resync ()
   "Reannounce open sessions and their current status after daemon restart."
   (when agent-shell-macropad-mode

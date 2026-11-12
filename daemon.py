@@ -92,6 +92,7 @@ import hid_protocol
 from codex_terminals import discover_codex_terminals
 from pad_link import HidPadLink
 from session_banks import SessionBanks, SlotAddress, SOURCES
+from session_lifecycle import Presence, TrackedSession, Observation, process_presence, terminal_presence, buffer_presence
 
 
 @dataclass(frozen=True)
@@ -341,7 +342,7 @@ def discover_running_sessions():
             ["claude", "agents", "--json"],
             capture_output=True, timeout=5, text=True,
         )
-    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+    except (OSError, subprocess.TimeoutExpired) as e:
         log.info("could not query running Claude Code sessions: %s", e)
         return []
     if result.returncode != 0:
@@ -565,6 +566,7 @@ class Daemon:
     # reason; also gives the VIA app a window to grab the same raw HID
     # interface once nothing here needs it.
     IDLE_CLOSE_GRACE_SECONDS = 5
+    SESSION_POLL_SECONDS = 5
 
     def __init__(self):
         # Default sizing — used as-is by tests and any headless run
@@ -606,6 +608,9 @@ class Daemon:
         # string (not running inside tmux) is never stored.
         self.session_panes = {}
         self.session_tmux = {}
+        self.session_pids = {}
+        self.session_epochs = {}
+        self._next_session_epoch = 0
         # session_id -> project folder name (same string already used
         # for the pad's slot label), used to match a VS Code window by
         # title when no tmux pane is available. This is the primary
@@ -675,6 +680,7 @@ class Daemon:
 
     def _allocate_slot(self, session_id, agent, session_kind=None):
         if isinstance(self.slots, SessionBanks):
+            previous = self.slots.slot_for(session_id)
             if agent == "codex" and self.slots.slot_for(session_id) is None:
                 binding = self._codex_terminal(session_id)
                 if binding is None:
@@ -687,13 +693,23 @@ class Daemon:
                     log.info("excluded non-terminal Claude session=%s", session_id)
                     return None
                 if session_kind is None:
-                    session_kind = next((s.get("kind") for s in discover_running_sessions()
-                                         if s.get("sessionId") == session_id), None)
+                    record = next((s for s in discover_running_sessions()
+                                   if s.get("sessionId") == session_id), {})
+                    session_kind = record.get("kind")
+                    if record.get("pid"):
+                        self.session_pids[session_id] = record["pid"]
                 if session_kind is not None and session_kind != "interactive":
                     log.info("excluded Claude session=%s kind=%s", session_id, session_kind)
                     return None
-            return self.slots.allocate(session_id, agent)
+            address = self.slots.allocate(session_id, agent)
+            if previous is None and address is not None:
+                self._advance_session_epoch(session_id)
+            return address
         return self.slots.allocate(session_id)
+
+    def _advance_session_epoch(self, session_id):
+        self._next_session_epoch += 1
+        self.session_epochs[session_id] = self._next_session_epoch
 
     def _codex_terminal(self, session_id):
         return next((binding for binding in discover_codex_terminals()
@@ -704,6 +720,8 @@ class Daemon:
         self.session_tmux[session_id] = TmuxTarget(binding["tmux_socket"], binding["tmux_pane"])
         self.session_panes[session_id] = binding["tmux_pane"]
         self.session_ttys[session_id] = binding["tty"]
+        if binding.get("pid"):
+            self.session_pids[session_id] = binding["pid"]
 
     def _terminal_available(self, target, tty):
         """Whether a route identifies a live local terminal without raising it."""
@@ -900,11 +918,17 @@ class Daemon:
         index rather than a session_id from a hook payload.
         """
         session_id = self.slots.slot_to_session[i]
-        address = self.slots.slot_for(session_id)
-        self.slots.evict(i)
-        if self.selected_session == session_id:
-            self.selected_session = None
-        if session_id is not None:
+        if session_id is None:
+            self._send_pad({"t": "clear", "i": i})
+        else:
+            self._retire_session(session_id, "ManualEvict")
+
+    def _retire_session(self, session_id, reason):
+        """Free one assignment without moving any surviving session."""
+        with self._display_lock:
+            address = self.slots.free(session_id)
+            if self.selected_session == session_id:
+                self.selected_session = None
             self.pending_calls.pop(session_id, None)
             self.session_panes.pop(session_id, None)
             self.session_tmux.pop(session_id, None)
@@ -914,10 +938,12 @@ class Daemon:
             self.session_projects.pop(session_id, None)
             self.session_agents.pop(session_id, None)
             self.session_dispatch_method.pop(session_id, None)
-        self._send_pad({"t": "clear", "i": address if address is not None else i})
-        events_log.info(
-            "MAPPED slot=%s cleared (ManualEvict session=%s)", i, session_id
-        )
+            self.session_pids.pop(session_id, None)
+            self.session_epochs.pop(session_id, None)
+            if address is not None:
+                self._send_pad({"t": "clear", "i": address})
+                events_log.info("MAPPED slot=%s cleared (%s session=%s)", address, reason, session_id)
+        self._kick_reconcile(delay=self.IDLE_CLOSE_GRACE_SECONDS)
 
     def _dispatch_candidates(self, session_id):
         """(name, arg, method) for every dispatch method, in fallback
@@ -1683,6 +1709,7 @@ class Daemon:
             label = Path(payload.get("cwd", "")).name or session_id[:8]
             self.session_projects[session_id] = label
             if i is not None:
+                self._advance_session_epoch(session_id)
                 self._send_pad(
                     {"t": "slot", "i": i, "state": "idle", "label": label}
                 )
@@ -1694,22 +1721,7 @@ class Daemon:
             return
 
         if event_name == "SessionEnd":
-            i = self.slots.free(session_id)
-            self._kick_reconcile(delay=self.IDLE_CLOSE_GRACE_SECONDS)
-            self.pending_calls.pop(session_id, None)
-            self.session_panes.pop(session_id, None)
-            self.session_tmux.pop(session_id, None)
-            self.session_ttys.pop(session_id, None)
-            self.session_emacs.pop(session_id, None)
-            self.session_permissions.pop(session_id, None)
-            if self.selected_session == session_id:
-                self.selected_session = None
-            self.session_projects.pop(session_id, None)
-            self.session_agents.pop(session_id, None)
-            self.session_dispatch_method.pop(session_id, None)
-            if i is not None:
-                self._send_pad({"t": "clear", "i": i})
-                events_log.info("MAPPED slot=%s cleared (SessionEnd)", i)
+            self._retire_session(session_id, "SessionEnd")
             return
 
         i = self.slots.slot_for(session_id)
@@ -1803,6 +1815,78 @@ class Daemon:
             msg["label"] = payload["tool_name"]
         self._send_pad(msg)
         events_log.info("MAPPED slot=%s state=%s event=%s", i, state, event_name)
+
+    def _tracked_sessions(self):
+        if not isinstance(self.slots, SessionBanks):
+            return ()
+        with self._display_lock, self.slots.lock:
+            return tuple(TrackedSession(session, address, self.session_pids.get(session),
+                                        self.session_epochs.get(session, 0))
+                         for session, address in self.slots.session_to_slot.items())
+
+    def _emacs_session_ids(self):
+        expression = ("(when (and (fboundp 'agent-shell-macropad-session-ids) "
+                      "(bound-and-true-p agent-shell-macropad-mode)) "
+                      "(json-encode (agent-shell-macropad-session-ids)))")
+        try:
+            result = subprocess.run(["emacsclient", "--eval", expression],
+                                    capture_output=True, text=True, timeout=3)
+            if result.returncode or result.stdout.strip() == "nil":
+                return None
+            sessions = json.loads(json.loads(result.stdout))
+        except (OSError, subprocess.TimeoutExpired, ValueError, TypeError):
+            return None
+        if not isinstance(sessions, list) or any(not isinstance(session, str) for session in sessions):
+            return None
+        return frozenset(sessions)
+
+    def _read_session_presence(self, tracked):
+        sources = {session.address.source for session in tracked}
+        visible = {}
+        if "claude-code" in sources:
+            visible["claude-code"] = {s["sessionId"]: s.get("pid")
+                                      for s in discover_running_sessions() if s.get("sessionId")}
+        if "codex" in sources:
+            visible["codex"] = {s["sessionId"]: s["pid"] for s in discover_codex_terminals()}
+        emacs = self._emacs_session_ids() if "agent-shell" in sources else None
+        observations = {}
+        for session in tracked:
+            if session.address.source == "agent-shell":
+                observations[session.session_id] = Observation(buffer_presence(session.session_id, emacs))
+            else:
+                catalog = visible.get(session.address.source, {})
+                pid = catalog.get(session.session_id) or session.pid
+                state = terminal_presence(session.session_id, pid, catalog, process_presence(pid))
+                observations[session.session_id] = Observation(state, pid)
+        return observations
+
+    def _apply_session_presence(self, tracked, observations):
+        with self._display_lock:
+            for session in tracked:
+                # A session can resume or a key can be reused while the
+                # process/buffer probes run off the event loop.
+                if (self.slots.slot_for(session.session_id) != session.address
+                        or self.session_epochs.get(session.session_id, 0) != session.epoch
+                        or self.session_pids.get(session.session_id) != session.pid):
+                    continue
+                observation = observations[session.session_id]
+                if observation.presence is Presence.CLOSED:
+                    log.info("reclaiming closed session=%s slot=%s", session.session_id, session.address)
+                    self._retire_session(session.session_id, "ClosedSession")
+                elif observation.pid is not None:
+                    self.session_pids[session.session_id] = observation.pid
+
+    async def reconcile_closed_sessions(self):
+        tracked = self._tracked_sessions()
+        if not tracked:
+            return
+        observations = await asyncio.to_thread(self._read_session_presence, tracked)
+        self._apply_session_presence(tracked, observations)
+
+    async def watch_closed_sessions(self):
+        while True:
+            await asyncio.sleep(self.SESSION_POLL_SECONDS)
+            await self.reconcile_closed_sessions()
 
     async def watch_stalled_calls(self):
         """Backstop for Notification:permission_prompt's unreliability —
@@ -1938,6 +2022,8 @@ class Daemon:
                 i = self._allocate_slot(session_id, agent, session_kind=s.get("kind"))
                 if i is None:
                     continue
+                if s.get("pid"):
+                    self.session_pids[session_id] = s["pid"]
                 seeded += 1
                 label = Path(s.get("cwd", "")).name or session_id[:8]
                 self.session_projects[session_id] = label
@@ -2074,12 +2160,16 @@ class Daemon:
         # must keep accepting connections while emacsclient waits.
         await asyncio.to_thread(self.resync_emacs_sessions)
 
-        watcher_task = asyncio.create_task(self.watch_stalled_calls())
-
         async with server:
-            await server.serve_forever()
-
-        watcher_task.cancel()
+            tasks = [asyncio.create_task(self.watch_stalled_calls()),
+                     asyncio.create_task(self.watch_closed_sessions()),
+                     asyncio.create_task(server.serve_forever())]
+            try:
+                await asyncio.gather(*tasks)
+            finally:
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
 
     def resync_emacs_sessions(self):
         """Ask the live bridge to reannounce open sessions without focusing them."""

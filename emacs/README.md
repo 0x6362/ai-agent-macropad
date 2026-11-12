@@ -33,6 +33,9 @@ Missing daemon/socket access does not stop an agent session. On startup,
 the daemon asks the live bridge to reannounce open sessions and their
 current status. `agent-shell-macropad-resync` also does this manually;
 a later lifecycle event can register a session if startup resync fails.
+The daemon also polls `agent-shell-macropad-session-ids` to detect closed
+buffers when a cleanup event was missed. This query does not change focus
+or LED state; an unresponsive server leaves existing assignments intact.
 `agent-shell-macropad-mode -1` unsubscribes and clears its assignments.
 
 The implementation uses `agent-shell-subscribe-to`, with the ACP

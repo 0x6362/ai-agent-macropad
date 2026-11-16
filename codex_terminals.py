@@ -1,8 +1,12 @@
 """Bind Codex sessions to the local tmux clients displaying them.
 
 Shared app-server hooks inherit the server's environment. The displayed
-thread name and project come from each TUI and are matched exactly against
-saved session metadata. Missing and ambiguous matches produce no binding.
+thread name and project come from each TUI's default title and are matched
+against saved session metadata. Codex truncates each title segment with a
+trailing "..." (its widths vary by release), and names the project after the
+git repository or `.codex` project root containing the cwd, so a segment
+matches a full value it is a prefix of, and a project matches any directory
+name on the cwd's path. Missing and ambiguous matches produce no binding.
 """
 
 from collections import defaultdict
@@ -16,28 +20,36 @@ import subprocess
 log = logging.getLogger("macropad-daemon")
 
 
-def rendered_title(name, cwd):
-    """Render the default Codex thread-name/project-name title components."""
-    name = name if len(name) <= 48 else name[:45] + "..."
-    return name + " | " + Path(cwd).name
-
-
 def normalize_title(title):
     title = re.sub(r"^\[[!. ]+\] Action Required \| ", "", title)
     return re.sub(r"^[\u2800-\u28ff] ", "", title)
 
 
+def segment_matches(segment, value):
+    """True when a title segment shows `value` whole or truncated with "..."."""
+    if segment == value:
+        return True
+    return segment.endswith("...") and len(value) > len(segment) - 3 and value.startswith(segment[:-3])
+
+
+def title_matches(title, name, cwd):
+    displayed_name, separator, displayed_project = title.rpartition(" | ")
+    path = Path(cwd)
+    return bool(separator) and segment_matches(displayed_name, name) and any(
+        segment_matches(displayed_project, directory.name) for directory in (path, *path.parents) if directory.name)
+
+
 def match_terminals(threads, panes, processes):
     """Return only one-to-one session/pane matches backed by a Codex TTY."""
-    names = defaultdict(list)
-    for session_id, name, cwd in threads:
-        if name and cwd:
-            names[rendered_title(name, cwd)].append((session_id, cwd))
+    threads = [(session_id, name, cwd) for session_id, name, cwd in threads if name and cwd]
     matches = defaultdict(list)
     for pane in panes:
         pids = processes.get(pane["tty"], ())
-        candidates = names.get(normalize_title(pane["title"]), ())
-        if pane["command"] != "codex" or len(pids) != 1 or len(candidates) != 1:
+        if pane["command"] != "codex" or len(pids) != 1:
+            continue
+        title = normalize_title(pane["title"])
+        candidates = [(session_id, cwd) for session_id, name, cwd in threads if title_matches(title, name, cwd)]
+        if len(candidates) != 1:
             continue
         session_id, cwd = candidates[0]
         matches[session_id].append({

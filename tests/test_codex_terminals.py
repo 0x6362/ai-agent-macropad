@@ -29,6 +29,27 @@ def test_long_default_title_matches_the_exact_rendered_truncation():
     assert [match["sessionId"] for match in matches] == ["session"]
 
 
+def test_truncated_project_name_matches_the_full_directory_name():
+    matches = codex_terminals.match_terminals(
+        [("session", "Confirm approval", "/dev/prosite/.worktrees/tool-failed-terminal-errors")],
+        [pane("⠏ Confirm approval | tool-failed-terminal-...")],
+        {"/dev/ttys001": [42]})
+    assert [match["sessionId"] for match in matches] == ["session"]
+
+
+def test_project_named_after_the_repository_root_above_the_cwd_matches():
+    matches = codex_terminals.match_terminals(
+        [("session", "Fix", "/work/macropad/qmk-userspace")],
+        [pane("Fix | macropad")], {"/dev/ttys001": [42]})
+    assert [match["sessionId"] for match in matches] == ["session"]
+
+
+def test_truncated_segments_shared_by_two_sessions_are_not_guessed():
+    assert codex_terminals.match_terminals(
+        [("one", "Fix the alpha build", "/work/project"), ("two", "Fix the beta build", "/work/project")],
+        [pane("Fix the... | project")], {"/dev/ttys001": [42]}) == []
+
+
 def test_same_display_identity_for_two_sessions_is_not_guessed():
     assert codex_terminals.match_terminals(
         [("one", "Fix", "/work/project"), ("two", "Fix", "/other/project")],

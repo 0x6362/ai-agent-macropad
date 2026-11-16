@@ -50,10 +50,12 @@ docstring](../daemon.py) for what that means for pad states.
 
 On the banked K0, session focus comes from the live terminal client.
 Shared app-server hooks can inherit an unrelated tmux socket/pane, so
-the daemon ignores those hook fields for M2. It matches the exact saved
-display name and project against the default Codex terminal title,
-requires a live Codex process on that TTY, and refreshes the socket/pane
-on focus. Duplicate or missing identities do not select another terminal.
+the daemon ignores those hook fields for M2. It matches the saved thread
+name and project against the default Codex terminal title (accepting
+Codex's `...` truncation of either segment, and a project named after
+any directory above the cwd, such as the git repository root), requires
+a live Codex process on that TTY, and refreshes the socket/pane on
+focus. Duplicate or missing identities do not select another terminal.
 Custom terminal-title layouts may not match. Open terminal sessions are
 also discovered at daemon startup; agent-shell sessions remain in M3.
 
